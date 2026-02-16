@@ -1,0 +1,367 @@
+# Chromation AutoHeal Browser — Build Prompt
+
+**Tagline:** *Browse. Inspect. Automate. Heal.*
+
+---
+
+## 1. Project Overview
+
+Chromation AutoHeal Browser is a Chromium-engine–based automation browser purpose-built for QA Engineers, SDETs, and Automation Developers.
+
+The browser must combine traditional browsing with deeply embedded automation tooling, enabling users to:
+
+* Inspect elements intelligently
+* Generate robust locators
+* Record automation scripts
+* Auto-heal broken selectors
+* Replay recorded tests
+* Produce rich execution reports
+* Perform scraping and DOM extraction tasks
+
+This browser is not a plugin — automation capabilities must be **native to the browser experience**.
+
+---
+
+## 2. Core Architecture
+
+**Engine Base:**
+
+* Chromium (latest stable fork)
+* Maintain compatibility with Chrome DevTools Protocol (CDP)
+
+**Language Stack:**
+
+* C++ / Chromium base modifications
+* Node.js bridge layer
+* TypeScript automation APIs
+* Python optional bindings (future)
+* WebAssembly modules for performance tooling if needed
+
+**Extension Layer:**
+
+* Built-in DevTools panel
+* Automation overlay UI
+* Locator visualization layer
+
+---
+
+## 3. Core Feature Pillars
+
+---
+
+### 3.1 Smart Element Inspection
+
+Enhanced DevTools inspector with automation context.
+
+**Capabilities:**
+
+* Hover to highlight elements
+* DOM path visualization
+* Shadow DOM traversal
+* iFrame detection
+* Dynamic element tracking
+* Visibility & interactability scoring
+
+**Locator generation must support:**
+
+* id
+* name
+* class
+* css selector
+* xpath
+* aria labels
+* data-test attributes
+* custom attributes
+* text selectors
+* relative locators
+* shadow DOM selectors
+
+Each locator must include:
+
+* Stability score
+* Uniqueness score
+* Healing fallback ranking
+
+---
+
+### 3.2 Locator Auto-Healing Engine
+
+AI + rules-based locator repair system.
+
+**Functions:**
+
+* Detect broken locators during replay
+* Re-scan DOM for closest matches
+* Compare attributes, structure, and text
+* Use similarity scoring
+* Replace locator dynamically
+* Log healing events
+
+**Healing strategies:**
+
+* Attribute similarity
+* DOM hierarchy comparison
+* Visual position matching
+* Text proximity
+* AI pattern learning
+
+---
+
+### 3.3 Script Recorder
+
+Record user browser interactions and convert them into executable automation scripts.
+
+**Recordable actions:**
+
+* Clicks
+* Inputs / typing
+* Dropdown selections
+* Drag & drop
+* File uploads
+* Navigation
+* Assertions
+* Wait conditions
+* Hover events
+* Keyboard shortcuts
+
+**Recording modes:**
+
+* Manual start/stop
+* Auto-record session
+* Step recording
+
+---
+
+### 3.4 Script Export & File Saving
+
+Recorded scripts must be exportable as files.
+
+**Supported formats (MVP):**
+
+* Selenium (Java, Python, JS)
+* Playwright
+* Cypress
+* Puppeteer
+* Raw CDP scripts
+
+**File handling:**
+
+* Save locally
+* Version scripts
+* Edit before export
+* Add test data
+
+---
+
+### 3.5 Script Replay Engine
+
+Replay recorded scripts inside the browser or headless.
+
+**Capabilities:**
+
+* Step execution
+* Pause/resume
+* Breakpoints
+* Speed control
+* Environment switching
+* Parallel replay (future)
+
+---
+
+### 3.6 Reporting Engine
+
+Reporting is a core pillar — not an add-on.
+
+**Report types:**
+
+* Execution summary
+* Step pass/fail
+* Screenshots per step
+* Video recording
+* Healed locator logs
+* Performance timings
+* Network logs
+
+**Export formats:**
+
+* HTML
+* PDF
+* JSON
+* JUnit XML
+
+**Dashboard:**
+
+* Test history
+* Failure trends
+* Healing frequency
+* Locator stability analytics
+
+---
+
+## 4. Animation & UX Layer
+
+Animations should enhance usability without degrading performance.
+
+**Guidelines:**
+
+* GPU-accelerated animations only
+* Lightweight highlight overlays
+* Locator flash indicators
+* Healing event glow effect
+* Recorder status indicators
+
+Provide ability to:
+
+* Disable animations
+* Switch to low-performance mode
+
+---
+
+## 5. OhScrapper Function Salvage & Integration
+
+Incorporate and enhance scraping capabilities from:
+
+https://github.com/IamBlackShifu/OhScrapper
+
+These features must function **independently of test recording**.
+
+---
+
+### 5.1 Scraper Studio Module
+
+Refactor OhScrapper into a native browser module.
+
+**Capabilities:**
+
+* Visual data selection
+* Table extraction
+* Pagination scraping
+* Infinite scroll handling
+* API sniffing
+* AJAX capture
+* Export datasets
+
+**Export formats:**
+
+* CSV
+* JSON
+* Excel
+* Database connectors (future)
+
+---
+
+### 5.2 Smart Extraction Enhancements
+
+Improve OhScrapper logic with:
+
+* Auto field detection
+* Pattern recognition
+* Duplicate filtering
+* Data cleaning
+* Schema mapping
+
+---
+
+### 5.3 Dual Mode Operation
+
+Scraping must work in two modes:
+
+1. Standalone scraping
+2. Embedded in automation scripts
+
+Example:
+
+```
+Login → Navigate → Scrape table → Export → Logout
+```
+
+---
+
+## 6. Automation Best Practices Enforcement
+
+Browser should guide users toward best practices:
+
+* Prefer stable locators over brittle ones
+* Warn on dynamic XPaths
+* Suggest data-test attributes
+* Auto-add waits
+* Detect flaky steps
+* Recommend retries
+
+---
+
+## 7. DevTools Augmentation
+
+Custom DevTools panels:
+
+* Locator Studio
+* Recorder Console
+* Healing Logs
+* Script Editor
+* Scraper Studio
+* Network Inspector+
+
+---
+
+## 8. Performance Requirements
+
+* No inspector lag
+* Recorder overhead <5%
+* Healing <200ms per attempt
+* Lightweight overlay rendering
+* Efficient DOM diffing
+
+---
+
+## 9. Security & Sandboxing
+
+* Isolated script execution
+* Permission-based scraping
+* Secrets masking in recordings
+* Secure credential vault
+
+---
+
+## 10. Future AI Extensions
+
+Planned AI capabilities:
+
+* Natural language → test generation
+* Self-maintaining test suites
+* Visual regression detection
+* Test impact analysis
+
+---
+
+## 11. Deliverables (MVP)
+
+1. Chromium fork build
+2. Smart Inspector
+3. Locator generator
+4. Script recorder
+5. Script replay
+6. Auto-healing engine (rules-based v1)
+7. Reporting dashboard
+8. OhScrapper integration
+9. Exportable scripts
+10. Animation overlay system
+
+---
+
+## 12. Success Definition
+
+Chromation AutoHeal Browser succeeds when:
+
+* Tests can be recorded without coding
+* Locators rarely break
+* Broken tests auto-repair
+* Scripts replay reliably
+* Reports provide debugging clarity
+* Scraping + automation coexist seamlessly
+
+---
+
+**End Goal:**
+Create the world’s most automation-native browser — where testing, inspection, scraping, and healing live inside the browsing experience itself.
+
+*Browse. Inspect. Automate. Heal.*
