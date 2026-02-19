@@ -65,3 +65,35 @@ export class ChromationBrowser {
 
 // Export main entry point
 export default ChromationBrowser;
+
+// Main execution block - runs when file is executed directly
+async function main() {
+  console.log('='.repeat(60));
+  console.log('Chromation AutoHeal Browser');
+  console.log('Browse. Inspect. Automate. Heal.');
+  console.log('='.repeat(60));
+  console.log();
+
+  const browser = new ChromationBrowser();
+  await browser.initialize();
+  
+  console.log();
+  console.log('✓ Chromation AutoHeal Browser is ready!');
+  console.log();
+  console.log('Available modules:');
+  console.log('  • Inspector - Element inspection and locator generation');
+  console.log('  • Recorder - Action recording and script export');
+  console.log('  • HealingEngine - Auto-healing for broken locators');
+  console.log('  • ScraperStudio - Data extraction and scraping');
+  console.log('  • Reporter - Test reporting and documentation');
+  console.log();
+  console.log('To see a full demo, run: node example.ts');
+  console.log();
+  
+  await browser.shutdown();
+}
+
+// Run main if executed directly
+if (require.main === module) {
+  main().catch(console.error);
+}
