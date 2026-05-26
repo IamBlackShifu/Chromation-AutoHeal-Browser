@@ -10,7 +10,9 @@ import { Inspector } from './inspector/Inspector';
 import { Recorder } from './recorder/Recorder';
 import { HealingEngine } from './healing/HealingEngine';
 import { ScraperStudio } from './scraper/ScraperStudio';
-import { Reporter } from './reporter/Reporter';
+import { ExecutionReport, Reporter } from './reporter/Reporter';
+import { ScriptExecutor } from './executor/ScriptExecutor';
+import type { ExecutionOptions, ExecutionResult } from './executor/types';
 
 export class ChromationBrowser {
   private browserCore: BrowserCore;
@@ -19,6 +21,7 @@ export class ChromationBrowser {
   private healingEngine: HealingEngine;
   private scraperStudio: ScraperStudio;
   private reporter: Reporter;
+  private scriptExecutor: ScriptExecutor;
 
   constructor() {
     this.browserCore = new BrowserCore();
@@ -27,6 +30,7 @@ export class ChromationBrowser {
     this.healingEngine = new HealingEngine();
     this.scraperStudio = new ScraperStudio();
     this.reporter = new Reporter();
+    this.scriptExecutor = new ScriptExecutor();
   }
 
   async initialize(): Promise<void> {
@@ -61,7 +65,27 @@ export class ChromationBrowser {
   getReporter(): Reporter {
     return this.reporter;
   }
+
+  getScriptExecutor(): ScriptExecutor {
+    return this.scriptExecutor;
+  }
+
+  async executeRecordedActions(options?: ExecutionOptions): Promise<ExecutionResult> {
+    return this.scriptExecutor.execute(this.recorder.getActions(), options);
+  }
+
+  async executeRecordedActionsWithReport(
+    testName: string,
+    options?: ExecutionOptions
+  ): Promise<{ execution: ExecutionResult; report: ExecutionReport }> {
+    const execution = await this.executeRecordedActions(options);
+    const report = this.reporter.fromExecutionResult(testName, execution);
+    return { execution, report };
+  }
 }
+
+export { ScriptExecutor } from './executor/ScriptExecutor';
+export type { ExecutionOptions, ExecutionResult } from './executor/types';
 
 // Export main entry point
 export default ChromationBrowser;

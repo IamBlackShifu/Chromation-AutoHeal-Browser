@@ -53,6 +53,32 @@ describe('Recorder', () => {
     expect(typeof script).toBe('string');
   });
 
+  test('should export playwright assertions and page load waits', async () => {
+    recorder.startRecording();
+
+    recorder.recordAction({
+      type: 'waitForPageLoad',
+      selector: 'window',
+      timestamp: Date.now(),
+    });
+
+    recorder.recordAction({
+      type: 'assert',
+      selector: '.success-message',
+      timestamp: Date.now(),
+      metadata: {
+        kind: 'text-contains',
+        expected: 'Success',
+      },
+    });
+
+    const script = await recorder.exportScript('playwright');
+
+    expect(script).toContain("waitForLoadState('domcontentloaded')");
+    expect(script).toContain("Assertion failed: expected text to contain Success");
+    expect(script).toContain("page.locator('.success-message')");
+  });
+
   test('should clear actions', () => {
     recorder.startRecording();
     recorder.recordAction({

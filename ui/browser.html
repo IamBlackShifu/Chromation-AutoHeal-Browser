@@ -10,8 +10,8 @@
   <!-- Main Browser Container -->
   <div class="browser-container">
     
-    <!-- Chrome-style Tab Bar -->
-    <div class="tab-bar">
+    <!-- Chrome-style Tab Bar with Draggable Region -->
+    <div class="tab-bar" id="title-bar">
       <div class="tabs-container" id="tabs-container">
         <div class="tab active" data-tab-id="1">
           <div class="tab-favicon">🌐</div>
@@ -66,34 +66,8 @@
         <button id="btn-bookmark" class="bookmark-btn" title="Bookmark this page">★</button>
       </div>
 
-      <!-- Tool Buttons -->
+      <!-- Menu Button -->
       <div class="tool-controls">
-        <button id="btn-inspector" class="tool-btn" title="Inspector (Ctrl+Shift+I)">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="11" cy="11" r="8"></circle>
-            <path d="m21 21-4.35-4.35"></path>
-          </svg>
-        </button>
-        <button id="btn-recorder" class="tool-btn" title="Recorder (Ctrl+Shift+R)">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="10"></circle>
-            <circle cx="12" cy="12" r="3" fill="currentColor"></circle>
-          </svg>
-        </button>
-        <button id="btn-scraper" class="tool-btn" title="Scraper Studio (Ctrl+Shift+S)">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
-            <polyline points="14 2 14 8 20 8"></polyline>
-            <line x1="16" y1="13" x2="8" y2="13"></line>
-            <line x1="16" y1="17" x2="8" y2="17"></line>
-          </svg>
-        </button>
-        <button id="btn-healing" class="tool-btn active" title="Auto-Healing ON">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
-            <polyline points="22 4 12 14.01 9 11.01"></polyline>
-          </svg>
-        </button>
         <button id="btn-menu" class="menu-btn" title="Menu">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="5" r="1" fill="currentColor"></circle>
@@ -103,6 +77,41 @@
         </button>
         <!-- Menu Dropdown -->
         <div id="menu-dropdown" class="menu-dropdown hidden">
+          <div class="menu-item" id="menu-inspector">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8"></circle>
+              <path d="m21 21-4.35-4.35"></path>
+            </svg>
+            <span>Inspector</span>
+            <span class="menu-shortcut">Ctrl+Shift+I</span>
+          </div>
+          <div class="menu-item" id="menu-recorder">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"></circle>
+              <circle cx="12" cy="12" r="3" fill="currentColor"></circle>
+            </svg>
+            <span>Recorder</span>
+            <span class="menu-shortcut">Ctrl+Shift+R</span>
+          </div>
+          <div class="menu-item" id="menu-scraper">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+              <polyline points="14 2 14 8 20 8"></polyline>
+              <line x1="16" y1="13" x2="8" y2="13"></line>
+              <line x1="16" y1="17" x2="8" y2="17"></line>
+            </svg>
+            <span>Scraper Studio</span>
+            <span class="menu-shortcut">Ctrl+Shift+S</span>
+          </div>
+          <div class="menu-item" id="menu-healing">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+              <polyline points="22 4 12 14.01 9 11.01"></polyline>
+            </svg>
+            <span>Auto-Healing</span>
+            <span class="menu-status">ON</span>
+          </div>
+          <div class="menu-divider"></div>
           <div class="menu-item" id="menu-recordings">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"></path>
@@ -201,28 +210,68 @@
   <!-- Inspector Panel Template -->
   <template id="inspector-panel-template">
     <div class="tool-panel">
-      <h4>🔍 Element Inspector & Discovery</h4>
-      <div class="inspector-modes">
-        <button id="start-inspect-btn" class="primary-btn">Inspect Single Element</button>
-        <button id="discover-all-btn" class="primary-btn" style="margin-left: 8px;">Discover All Elements</button>
+      <div class="panel-section">
+        <h4 class="panel-heading">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"></circle>
+            <path d="m21 21-4.35-4.35"></path>
+          </svg>
+          Inspector & Discovery
+        </h4>
+        <p class="panel-description">Inspect elements and discover page objects</p>
       </div>
-      <div id="element-info" class="element-info" style="display: none; margin-top: 16px;">
-        <h5>Element Details</h5>
-        <div id="element-details"></div>
-        <h5>Generated Locators (by priority)</h5>
-        <div id="locators-list"></div>
+      
+      <div class="panel-section">
+        <div class="button-group">
+          <button id="start-inspect-btn" class="primary-btn full-width">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+              <circle cx="12" cy="12" r="3"></circle>
+            </svg>
+            Inspect Element
+          </button>
+          <button id="discover-all-btn" class="secondary-btn full-width">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="7" height="7"></rect>
+              <rect x="14" y="3" width="7" height="7"></rect>
+              <rect x="14" y="14" width="7" height="7"></rect>
+              <rect x="3" y="14" width="7" height="7"></rect>
+            </svg>
+            Discover All
+          </button>
+        </div>
       </div>
-      <div id="discovery-results" class="discovery-results" style="display: none; margin-top: 16px;">
-        <h5>Discovered Elements (<span id="element-count">0</span>)</h5>
-        <div class="export-pom-controls" style="margin: 12px 0;">
-          <label>Export as:</label>
-          <select id="pom-framework-select">
-            <option value="playwright">Playwright POM</option>
-            <option value="selenium-js">Selenium (JavaScript)</option>
-            <option value="cypress">Cypress</option>
-          </select>
-          <button id="export-pom-btn" class="secondary-btn">Export POM</button>
-          <button id="export-json-btn" class="secondary-btn">Export JSON</button>
+
+      <div id="element-info" class="panel-card" style="display: none;">
+        <div class="card-header">
+          <h5>Element Details</h5>
+        </div>
+        <div id="element-details" class="card-content"></div>
+        <div class="card-header">
+          <h5>Generated Locators</h5>
+          <span class="badge">Priority Order</span>
+        </div>
+        <div id="locators-list" class="card-content"></div>
+      </div>
+
+      <div id="discovery-results" class="panel-card" style="display: none;">
+        <div class="card-header">
+          <h5>Discovered Elements</h5>
+          <span class="badge badge-count" id="element-count">0</span>
+        </div>
+        <div class="card-content">
+          <div class="form-group">
+            <label class="form-label">Export Format</label>
+            <select id="pom-framework-select" class="form-select">
+              <option value="playwright">Playwright POM</option>
+              <option value="selenium-js">Selenium (JavaScript)</option>
+              <option value="cypress">Cypress</option>
+            </select>
+          </div>
+          <div class="button-group">
+            <button id="export-pom-btn" class="secondary-btn full-width">Export POM</button>
+            <button id="export-json-btn" class="secondary-btn full-width">Export JSON</button>
+          </div>
         </div>
         <div id="elements-table" class="elements-table"></div>
       </div>
@@ -232,40 +281,151 @@
   <!-- Recorder Panel Template -->
   <template id="recorder-panel-template">
     <div class="tool-panel">
-      <h4>Action and Steps Recorder</h4>
-      <div class="recorder-controls">
-        <button id="start-record-btn" class="primary-btn">Record</button>
-        <button id="stop-record-btn" class="secondary-btn" disabled>Stop</button>
-        <button id="replay-record-btn" class="secondary-btn" disabled>▶ Replay</button>
+      <div class="panel-section">
+        <h4 class="panel-heading">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"></circle>
+            <circle cx="12" cy="12" r="3" fill="currentColor"></circle>
+          </svg>
+          Action Recorder
+        </h4>
+        <p class="panel-description">Record and replay user interactions</p>
       </div>
-      <div class="recording-mode">
-        <label>Mode:</label>
-        <select id="recording-mode-select">
-          <option value="auto">Auto</option>
-          <option value="manual">Manual</option>
-          <option value="step">Step-by-step</option>
-        </select>
-        <label style="margin-left: 16px;">Replay Speed:</label>
-        <select id="replay-speed-select">
-          <option value="0.5">0.5x (Slow)</option>
-          <option value="1" selected>1x (Normal)</option>
-          <option value="2">2x (Fast)</option>
-          <option value="5">5x (Very Fast)</option>
-        </select>
+
+      <div class="panel-section">
+        <div class="button-group">
+          <button id="start-record-btn" class="primary-btn">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+              <circle cx="12" cy="12" r="8"></circle>
+            </svg>
+            Start Recording
+          </button>
+          <button id="stop-record-btn" class="secondary-btn" disabled>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+              <rect x="6" y="6" width="12" height="12"></rect>
+            </svg>
+            Stop
+          </button>
+          <button id="replay-record-btn" class="secondary-btn" disabled>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="5 3 19 12 5 21 5 3"></polygon>
+            </svg>
+            Replay
+          </button>
+        </div>
       </div>
-      <div id="actions-list" class="actions-list">
-        <p class="hint">No actions recorded yet</p>
+
+      <div class="panel-section">
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Mode</label>
+            <select id="recording-mode-select" class="form-select">
+              <option value="auto">Auto</option>
+              <option value="manual">Manual</option>
+              <option value="step">Step-by-step</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Replay Speed</label>
+            <select id="replay-speed-select" class="form-select">
+              <option value="0.5">0.5x</option>
+              <option value="1" selected>1x</option>
+              <option value="2">2x</option>
+              <option value="5">5x</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-group" style="margin-top: 12px;">
+          <label class="form-label">Replay Engine</label>
+          <select id="replay-engine-select" class="form-select">
+            <option value="webview" selected>In-Browser Replay (fast)</option>
+            <option value="playwright">Playwright Executor (evidence-rich)</option>
+          </select>
+        </div>
+        <div class="form-row" style="margin-top: 12px;">
+          <div class="form-group">
+            <label class="form-label">Step Timeout (ms)</label>
+            <input id="replay-timeout-input" class="form-input" type="number" min="1000" step="500" value="8000" />
+          </div>
+          <div class="form-group">
+            <label class="form-label">Retries</label>
+            <input id="replay-retries-input" class="form-input" type="number" min="0" step="1" value="1" />
+          </div>
+        </div>
+        <div class="form-group" style="margin-top: 8px;">
+          <label style="display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-secondary);">
+            <input id="replay-continue-on-failure" type="checkbox" checked />
+            Continue on failure
+          </label>
+        </div>
       </div>
-      <div class="export-controls" style="margin-top: 15px;">
-        <label>Export as:</label>
-        <select id="export-format-select">
-          <option value="playwright">Playwright</option>
-          <option value="selenium-js">Selenium (JS)</option>
-          <option value="selenium-python">Selenium (Python)</option>
-          <option value="cypress">Cypress</option>
-          <option value="puppeteer">Puppeteer</option>
-        </select>
-        <button id="export-script-btn" class="secondary-btn">Export Script</button>
+
+      <div class="panel-card">
+        <div class="card-header">
+          <h5>Recorded Actions</h5>
+          <span class="badge">0</span>
+        </div>
+        <div id="actions-list" class="actions-list">
+          <div class="empty-state">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <circle cx="12" cy="12" r="10"></circle>
+              <circle cx="12" cy="12" r="3" fill="currentColor"></circle>
+            </svg>
+            <p>No actions recorded yet</p>
+            <span>Click "Start Recording" to begin</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel-section">
+        <div class="form-group">
+          <label class="form-label">Script Format</label>
+          <select id="export-format-select" class="form-select">
+            <option value="playwright">Playwright</option>
+            <option value="selenium-js">Selenium (JS)</option>
+            <option value="selenium-python">Selenium (Python)</option>
+            <option value="cypress">Cypress</option>
+            <option value="puppeteer">Puppeteer</option>
+          </select>
+        </div>
+        <button id="export-script-btn" class="secondary-btn full-width">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="7 10 12 15 17 10"></polyline>
+            <line x1="12" y1="15" x2="12" y2="3"></line>
+          </svg>
+          Export Script
+        </button>
+
+        <div class="form-group" style="margin-top: 12px;">
+          <label class="form-label">Report Format</label>
+          <select id="report-format-select" class="form-select">
+            <option value="html">HTML</option>
+            <option value="json">JSON</option>
+            <option value="junit">JUnit XML</option>
+            <option value="har">HAR</option>
+            <option value="allure">Allure</option>
+          </select>
+        </div>
+        <div class="button-group">
+          <button id="export-report-btn" class="secondary-btn full-width">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="7 10 12 15 17 10"></polyline>
+              <line x1="12" y1="15" x2="12" y2="3"></line>
+            </svg>
+            Export Report
+          </button>
+          <button id="export-all-reports-btn" class="secondary-btn full-width">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="8" cy="8" r="2"></circle>
+              <circle cx="16" cy="8" r="2"></circle>
+              <circle cx="8" cy="16" r="2"></circle>
+              <circle cx="16" cy="16" r="2"></circle>
+            </svg>
+            All Formats
+          </button>
+        </div>
       </div>
     </div>
   </template>
@@ -273,17 +433,60 @@
   <!-- Scraper Panel Template -->
   <template id="scraper-panel-template">
     <div class="tool-panel">
-      <h4>📊 Scraper Studio</h4>
-      <p>Extract data from tables and lists</p>
-      <div class="scraper-controls">
-        <input type="text" id="scraper-selector" placeholder="CSS Selector (e.g., table)" />
-        <button id="start-scrape-btn" class="primary-btn">Start Scraping</button>
+      <div class="panel-section">
+        <h4 class="panel-heading">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+            <polyline points="14 2 14 8 20 8"></polyline>
+            <line x1="16" y1="13" x2="8" y2="13"></line>
+            <line x1="16" y1="17" x2="8" y2="17"></line>
+          </svg>
+          Scraper Studio
+        </h4>
+        <p class="panel-description">Extract structured data from web pages</p>
       </div>
-      <div id="scraped-data" class="scraped-data">
-        <p class="hint">No data scraped yet</p>
+
+      <div class="panel-section">
+        <div class="form-group">
+          <label class="form-label">CSS Selector</label>
+          <input type="text" id="scraper-selector" class="form-input" placeholder="e.g., table, .product-list, #data-grid" />
+        </div>
+        <button id="start-scrape-btn" class="primary-btn full-width">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+          </svg>
+          Start Scraping
+        </button>
       </div>
-      <div class="export-controls" style="margin-top: 15px;">
-        <button id="export-csv-btn" class="secondary-btn">Export as CSV</button>
+
+      <div class="panel-card">
+        <div class="card-header">
+          <h5>Scraped Data</h5>
+          <span class="badge">0 rows</span>
+        </div>
+        <div id="scraped-data" class="scraped-data">
+          <div class="empty-state">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <rect x="3" y="3" width="7" height="7"></rect>
+              <rect x="14" y="3" width="7" height="7"></rect>
+              <rect x="14" y="14" width="7" height="7"></rect>
+              <rect x="3" y="14" width="7" height="7"></rect>
+            </svg>
+            <p>No data scraped yet</p>
+            <span>Enter a CSS selector and click "Start Scraping"</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel-section">
+        <div class="button-group">
+          <button id="export-csv-btn" class="secondary-btn full-width">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+              <polyline points="14 2 14 8 20 8"></polyline>
+            </svg>
+            Export CSV
+          </button>
         <button id="export-json-btn" class="secondary-btn">Export as JSON</button>
       </div>
     </div>

@@ -32,11 +32,7 @@ const btnForward = document.getElementById('btn-forward');
 const btnRefresh = document.getElementById('btn-refresh');
 const btnHome = document.getElementById('btn-home');
 
-// Tool buttons
-const btnInspector = document.getElementById('btn-inspector');
-const btnRecorder = document.getElementById('btn-recorder');
-const btnScraper = document.getElementById('btn-scraper');
-const btnHealing = document.getElementById('btn-healing');
+// Tool buttons (now in menu)
 const btnClosePanel = document.getElementById('btn-close-panel');
 
 // Initialize Chromation Browser
@@ -92,6 +88,24 @@ function navigateToUrl(url) {
       value: url,
       timestamp: Date.now()
     });
+    
+    // Add page load wait assertion
+    const pageLoadListener = () => {
+      if (isRecording && recorder) {
+        recorder.recordAction({
+          type: 'waitForPageLoad',
+          selector: 'window',
+          value: url,
+          extra: 'Page loaded successfully',
+          timestamp: Date.now()
+        });
+        updateActionsDisplay();
+      }
+      browserWebview.removeEventListener('did-finish-load', pageLoadListener);
+    };
+    
+    browserWebview.addEventListener('did-finish-load', pageLoadListener);
+    
     updateActionsDisplay();
   }
 }
@@ -133,37 +147,16 @@ btnRefresh.addEventListener('click', () => {
 });
 
 btnHome.addEventListener('click', () => {
-  navigateToUrl('https://infinitylinesofcode.com');
+  navigateToUrl('https://duckduckgo.com');
 });
 
-// Tool buttons
-btnInspector.addEventListener('click', () => {
-  toggleTool('inspector');
-});
-
-btnRecorder.addEventListener('click', () => {
-  toggleTool('recorder');
-});
-
-btnScraper.addEventListener('click', () => {
-  toggleTool('scraper');
-});
-
-btnHealing.addEventListener('click', () => {
-  toggleHealing();
-});
-
+// Close panel button
 btnClosePanel.addEventListener('click', () => {
   closePanel();
 });
 
 // Toggle tools
 function toggleTool(tool) {
-  // Reset all tool buttons
-  btnInspector.classList.remove('active');
-  btnRecorder.classList.remove('active');
-  btnScraper.classList.remove('active');
-  
   // Activate selected tool
   const isOpen = sidePanel.classList.contains('open');
   const isSameTool = sidePanel.dataset.currentTool === tool;
@@ -177,15 +170,12 @@ function toggleTool(tool) {
   
   switch (tool) {
     case 'inspector':
-      btnInspector.classList.add('active');
       showInspectorPanel();
       break;
     case 'recorder':
-      btnRecorder.classList.add('active');
       showRecorderPanel();
       break;
     case 'scraper':
-      btnScraper.classList.add('active');
       showScraperPanel();
       break;
   }
@@ -195,9 +185,6 @@ function toggleTool(tool) {
 
 function closePanel() {
   sidePanel.classList.remove('open');
-  btnInspector.classList.remove('active');
-  btnRecorder.classList.remove('active');
-  btnScraper.classList.remove('active');
   
   // Stop any active operations
   if (isInspecting && inspector) {
@@ -724,7 +711,40 @@ function showRecorderPanel() {
   const replayRecordBtn = document.getElementById('replay-record-btn');
   const recordingModeSelect = document.getElementById('recording-mode-select');
   const exportFormatSelect = document.getElementById('export-format-select');
+  const replayEngineSelect = document.getElementById('replay-engine-select');
+  const replayTimeoutInput = document.getElementById('replay-timeout-input');
+  const replayRetriesInput = document.getElementById('replay-retries-input');
+  const replayContinueOnFailure = document.getElementById('replay-continue-on-failure');
+  const reportFormatSelect = document.getElementById('report-format-select');
+  const exportReportBtn = document.getElementById('export-report-btn');
+  const exportAllReportsBtn = document.getElementById('export-all-reports-btn');
   const replaySpeedSelect = document.getElementById('replay-speed-select');
+  
+  // Add save, import buttons dynamically
+  const panelSection = panelContent.querySelector('.panel-section:last-child');
+  if (panelSection && !document.getElementById('save-record-btn')) {
+    const saveImportHTML = `
+      <div class="button-group" style="margin-top: 16px;">
+        <button id="save-record-btn" class="secondary-btn full-width">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+            <polyline points="17 21 17 13 7 13 7 21"></polyline>
+            <polyline points="7 3 7 8 15 8"></polyline>
+          </svg>
+          Save Recording
+        </button>
+        <button id="import-record-btn" class="secondary-btn full-width">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="17 8 12 3 7 8"></polyline>
+            <line x1="12" y1="3" x2="12" y2="15"></line>
+          </svg>
+          Import Recording
+        </button>
+      </div>
+    `;
+    panelSection.insertAdjacentHTML('beforeend', saveImportHTML);
+  }
   
   startRecordBtn.addEventListener('click', () => {
     startRecording(recordingModeSelect.value);
@@ -737,10 +757,43 @@ function showRecorderPanel() {
   exportScriptBtn.addEventListener('click', () => {
     exportScript(exportFormatSelect.value);
   });
+
+  if (exportReportBtn && reportFormatSelect) {
+    exportReportBtn.addEventListener('click', () => {
+      exportReplayReport(reportFormatSelect.value);
+    });
+  }
+
+  if (exportAllReportsBtn) {
+    exportAllReportsBtn.addEventListener('click', () => {
+      exportAllReplayReports();
+    });
+  }
   
   if (replayRecordBtn) {
     replayRecordBtn.addEventListener('click', () => {
-      replayActions(parseFloat(replaySpeedSelect.value));
+      const policy = {
+        timeoutMs: Math.max(1000, parseInt(replayTimeoutInput?.value || '8000', 10) || 8000),
+        retries: Math.max(0, parseInt(replayRetriesInput?.value || '1', 10) || 0),
+        continueOnFailure: Boolean(replayContinueOnFailure?.checked),
+      };
+      replayActions(parseFloat(replaySpeedSelect.value), replayEngineSelect?.value || 'webview', policy);
+    });
+  }
+  
+  // Save recording button
+  const saveBtn = document.getElementById('save-record-btn');
+  if (saveBtn) {
+    saveBtn.addEventListener('click', () => {
+      saveRecording();
+    });
+  }
+  
+  // Import recording button
+  const importBtn = document.getElementById('import-record-btn');
+  if (importBtn) {
+    importBtn.addEventListener('click', () => {
+      importRecording();
     });
   }
   
@@ -755,11 +808,31 @@ function startRecording(mode) {
   recorder.startRecording(mode);
   recordedActions = [];
   
+  // Automatically record the current URL as the first action
+  const currentUrl = browserWebview.getURL();
+  if (currentUrl && currentUrl !== 'about:blank') {
+    recordedActions.push({
+      type: 'navigate',
+      selector: 'window',
+      value: currentUrl,
+      timestamp: Date.now()
+    });
+    recorder.recordAction({
+      type: 'navigate',
+      selector: 'window',
+      value: currentUrl,
+      timestamp: Date.now()
+    });
+  }
+  
   document.getElementById('start-record-btn').disabled = true;
   document.getElementById('stop-record-btn').disabled = false;
   recordingStatus.textContent = '⏺️ Recording...';
   recordingStatus.classList.add('active');
   statusText.textContent = 'Recording actions...';
+  
+  // Update display to show the initial URL action
+  updateActionsDisplay();
   
   // Start monitoring webview interactions
   monitorWebviewActions();
@@ -786,11 +859,47 @@ function stopRecording() {
     console.error('Failed to stop recording in webview:', error);
   }
   
+  // Clean up navigation listeners
+  if (browserWebview._chromationNavListeners) {
+    browserWebview._chromationNavListeners.forEach(({ event, handler }) => {
+      browserWebview.removeEventListener(event, handler);
+    });
+    browserWebview._chromationNavListeners = null;
+  }
+  
   updateActionsDisplay();
   updateReplayButton();
 }
 
 function monitorWebviewActions() {
+  if (!isRecording || !recorder) return;
+  
+  // Re-inject recording script when page navigates
+  const handlePageNavigation = () => {
+    if (isRecording && recorder) {
+      console.log('Page navigated, re-injecting recording script...');
+      // Small delay to ensure page is ready
+      setTimeout(() => {
+        injectRecordingScript();
+      }, 500);
+    }
+  };
+  
+  // Listen for navigation events to re-inject recording script
+  browserWebview.addEventListener('did-navigate', handlePageNavigation);
+  browserWebview.addEventListener('did-navigate-in-page', handlePageNavigation);
+  
+  // Store listeners for cleanup
+  browserWebview._chromationNavListeners = [
+    { event: 'did-navigate', handler: handlePageNavigation },
+    { event: 'did-navigate-in-page', handler: handlePageNavigation }
+  ];
+  
+  // Inject the recording script
+  injectRecordingScript();
+}
+
+function injectRecordingScript() {
   if (!isRecording || !recorder) return;
   
   // Inject comprehensive event listeners into the webview to capture all interactions
@@ -800,34 +909,106 @@ function monitorWebviewActions() {
         if (window.__chromationRecording) return; // Already injected
         window.__chromationRecording = true;
         
+        function cssEscape(value) {
+          return String(value || '').replace(/([\\.#:[\],>+~*^$|=\"'()])/g, '\\$1');
+        }
+
+        // Build a deterministic CSS path so replay targets the exact recorded element.
+        function buildCssPath(element) {
+          if (!element || element.nodeType !== Node.ELEMENT_NODE) return '';
+          const segments = [];
+          let current = element;
+
+          while (current && current.nodeType === Node.ELEMENT_NODE && current.tagName.toLowerCase() !== 'html') {
+            let segment = current.tagName.toLowerCase();
+
+            if (current.id) {
+              segment += '#' + cssEscape(current.id);
+              segments.unshift(segment);
+              break;
+            }
+
+            const siblings = current.parentNode ? Array.from(current.parentNode.children).filter((child) => child.tagName === current.tagName) : [];
+            if (siblings.length > 1) {
+              const index = siblings.indexOf(current) + 1;
+              segment += ':nth-of-type(' + index + ')';
+            }
+
+            segments.unshift(segment);
+            current = current.parentElement;
+          }
+
+          return segments.join(' > ');
+        }
+
         // Helper to get best selector
         function getBestSelector(element) {
           if (!element) return '';
-          if (element.id) return '#' + element.id;
-          if (element.getAttribute('data-testid')) return '[data-testid="' + element.getAttribute('data-testid') + '"]';
-          if (element.getAttribute('data-test')) return '[data-test="' + element.getAttribute('data-test') + '"]';
-          if (element.getAttribute('aria-label')) return '[aria-label="' + element.getAttribute('aria-label') + '"]';
-          if (element.name) return '[name="' + element.name + '"]';
-          if (element.className && typeof element.className === 'string') {
-            const classes = element.className.trim().split(/\\s+/);
-            if (classes.length > 0 && classes[0]) return '.' + classes[0];
+
+          if (element.id) {
+            const idSelector = '#' + cssEscape(element.id);
+            if (document.querySelectorAll(idSelector).length === 1) {
+              return idSelector;
+            }
           }
-          return element.tagName.toLowerCase();
+
+          if (element.getAttribute('data-testid')) {
+            const selector = '[data-testid="' + cssEscape(element.getAttribute('data-testid')) + '"]';
+            if (document.querySelectorAll(selector).length === 1) {
+              return selector;
+            }
+          }
+
+          if (element.getAttribute('data-test')) {
+            const selector = '[data-test="' + cssEscape(element.getAttribute('data-test')) + '"]';
+            if (document.querySelectorAll(selector).length === 1) {
+              return selector;
+            }
+          }
+
+          if (element.getAttribute('aria-label')) {
+            const selector = element.tagName.toLowerCase() + '[aria-label="' + cssEscape(element.getAttribute('aria-label')) + '"]';
+            if (document.querySelectorAll(selector).length === 1) {
+              return selector;
+            }
+          }
+
+          if (element.name) {
+            const selector = element.tagName.toLowerCase() + '[name="' + cssEscape(element.name) + '"]';
+            if (document.querySelectorAll(selector).length === 1) {
+              return selector;
+            }
+          }
+
+          return buildCssPath(element);
         }
         
         // Get element XPath for better reliability
         function getXPath(element) {
-          if (element.id) return 'id("' + element.id + '")';
-          if (element === document.body) return '/html/body';
-          
-          let position = 0;
-          let siblings = element.parentNode.children;
-          for (let i = 0; i < siblings.length; i++) {
-            if (siblings[i] === element) {
-              return getXPath(element.parentNode) + '/' + element.tagName.toLowerCase() + '[' + (position + 1) + ']';
+          if (!element || element.nodeType !== Node.ELEMENT_NODE) return '';
+          if (element.id) return '//*[@id="' + element.id.replace(/"/g, '\\"') + '"]';
+
+          const parts = [];
+          let current = element;
+          while (current && current.nodeType === Node.ELEMENT_NODE) {
+            let index = 1;
+            let sibling = current.previousSibling;
+            while (sibling) {
+              if (sibling.nodeType === Node.ELEMENT_NODE && sibling.nodeName === current.nodeName) {
+                index++;
+              }
+              sibling = sibling.previousSibling;
             }
-            if (siblings[i].tagName === element.tagName) position++;
+
+            parts.unshift(current.nodeName.toLowerCase() + '[' + index + ']');
+            current = current.parentNode;
           }
+
+          return '/' + parts.join('/');
+        }
+
+        function emitRecord(payload) {
+          console.log('CHROMATION_RECORD_JSON:' + JSON.stringify(payload));
         }
         
         // Get element text content for context
@@ -855,7 +1036,13 @@ function monitorWebviewActions() {
             const deltaY = scrollY - lastScrollY;
             const deltaX = scrollX - lastScrollX;
             
-            console.log('CHROMATION_RECORD:scroll:window:' + scrollY + ',' + scrollX + ':' + deltaY + ',' + deltaX);
+            emitRecord({
+              actionType: 'scroll',
+              selector: 'window',
+              value: scrollY + ',' + scrollX,
+              extra: deltaY + ',' + deltaX,
+              xpath: '',
+            });
             
             lastScrollY = scrollY;
             lastScrollX = scrollX;
@@ -870,20 +1057,25 @@ function monitorWebviewActions() {
           const text = getElementText(element);
           const tag = element.tagName.toLowerCase();
           
-          // Record with enriched data
-          console.log('CHROMATION_RECORD:click:' + selector + ':' + text + ':' + tag + ':' + xpath);
+          emitRecord({
+            actionType: 'click',
+            selector: selector,
+            value: text,
+            extra: tag,
+            xpath: xpath,
+          });
         }, true);
         
         // Capture right clicks
         document.addEventListener('contextmenu', function(e) {
           const selector = getBestSelector(e.target);
-          console.log('CHROMATION_RECORD:rightclick:' + selector + ':' + getElementText(e.target));
+          emitRecord({ actionType: 'rightclick', selector: selector, value: getElementText(e.target), extra: '', xpath: getXPath(e.target) });
         }, true);
         
         // Capture double clicks
         document.addEventListener('dblclick', function(e) {
           const selector = getBestSelector(e.target);
-          console.log('CHROMATION_RECORD:doubleclick:' + selector + ':' + getElementText(e.target));
+          emitRecord({ actionType: 'doubleclick', selector: selector, value: getElementText(e.target), extra: '', xpath: getXPath(e.target) });
         }, true);
         
         // Capture input changes with keystroke info
@@ -892,7 +1084,7 @@ function monitorWebviewActions() {
             const selector = getBestSelector(e.target);
             const value = e.target.value;
             const inputType = e.target.type || 'text';
-            console.log('CHROMATION_RECORD:input:' + selector + ':' + value + ':' + inputType);
+            emitRecord({ actionType: 'input', selector: selector, value: value, extra: inputType, xpath: getXPath(e.target) });
           }
         }, true);
         
@@ -909,7 +1101,7 @@ function monitorWebviewActions() {
             if (e.metaKey) modifiers.push('meta');
             if (e.shiftKey) modifiers.push('shift');
             
-            console.log('CHROMATION_RECORD:keypress:' + selector + ':' + key + ':' + modifiers.join('+'));
+            emitRecord({ actionType: 'keypress', selector: selector, value: key, extra: modifiers.join('+'), xpath: getXPath(e.target) });
           }
         }, true);
         
@@ -919,27 +1111,27 @@ function monitorWebviewActions() {
             const selector = getBestSelector(e.target);
             const value = e.target.value;
             const text = e.target.options[e.target.selectedIndex]?.text || '';
-            console.log('CHROMATION_RECORD:select:' + selector + ':' + value + ':' + text);
+            emitRecord({ actionType: 'select', selector: selector, value: value, extra: text, xpath: getXPath(e.target) });
           } else if (e.target.type === 'checkbox') {
             const selector = getBestSelector(e.target);
-            console.log('CHROMATION_RECORD:checkbox:' + selector + ':' + e.target.checked);
+            emitRecord({ actionType: 'checkbox', selector: selector, value: String(e.target.checked), extra: '', xpath: getXPath(e.target) });
           } else if (e.target.type === 'radio') {
             const selector = getBestSelector(e.target);
-            console.log('CHROMATION_RECORD:radio:' + selector + ':' + e.target.value);
+            emitRecord({ actionType: 'radio', selector: selector, value: e.target.value, extra: '', xpath: getXPath(e.target) });
           }
         }, true);
         
         // Capture form submissions
         document.addEventListener('submit', function(e) {
           const selector = getBestSelector(e.target);
-          console.log('CHROMATION_RECORD:submit:' + selector + ':form');
+          emitRecord({ actionType: 'submit', selector: selector, value: 'form', extra: '', xpath: getXPath(e.target) });
         }, true);
         
         // Capture focus events
         document.addEventListener('focus', function(e) {
           const selector = getBestSelector(e.target);
           if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') {
-            console.log('CHROMATION_RECORD:focus:' + selector + ':' + e.target.tagName.toLowerCase());
+            emitRecord({ actionType: 'focus', selector: selector, value: e.target.tagName.toLowerCase(), extra: '', xpath: getXPath(e.target) });
           }
         }, true);
         
@@ -951,7 +1143,7 @@ function monitorWebviewActions() {
             if (e.target.tagName === 'A' || e.target.tagName === 'BUTTON' || 
                 e.target.getAttribute('role') === 'button') {
               const selector = getBestSelector(e.target);
-              console.log('CHROMATION_RECORD:hover:' + selector + ':' + getElementText(e.target));
+              emitRecord({ actionType: 'hover', selector: selector, value: getElementText(e.target), extra: '', xpath: getXPath(e.target) });
             }
           }, 500); // Record hover after 500ms
         }, true);
@@ -961,13 +1153,13 @@ function monitorWebviewActions() {
         document.addEventListener('dragstart', function(e) {
           draggedElement = e.target;
           const selector = getBestSelector(e.target);
-          console.log('CHROMATION_RECORD:dragstart:' + selector + ':' + getElementText(e.target));
+          emitRecord({ actionType: 'dragstart', selector: selector, value: getElementText(e.target), extra: '', xpath: getXPath(e.target) });
         }, true);
         
         document.addEventListener('drop', function(e) {
           const selector = getBestSelector(e.target);
           const draggedSelector = draggedElement ? getBestSelector(draggedElement) : '';
-          console.log('CHROMATION_RECORD:drop:' + selector + ':' + draggedSelector);
+          emitRecord({ actionType: 'drop', selector: selector, value: draggedSelector, extra: '', xpath: getXPath(e.target) });
         }, true);
         
         console.log('Chromation: Enhanced recording injected - capturing clicks, inputs, scrolls, keys, and more');
@@ -976,7 +1168,64 @@ function monitorWebviewActions() {
     
     // Listen to console messages from webview to capture recorded actions
     browserWebview.addEventListener('console-message', (e) => {
-      if (isRecording && e.message.startsWith('CHROMATION_RECORD:')) {
+      if (!isRecording) return;
+
+      if (e.message.startsWith('CHROMATION_RECORD_JSON:')) {
+        let payload;
+        try {
+          payload = JSON.parse(e.message.replace('CHROMATION_RECORD_JSON:', ''));
+        } catch (error) {
+          console.error('Failed to parse CHROMATION_RECORD_JSON payload:', error);
+          return;
+        }
+
+        const actionType = payload.actionType;
+        const selector = payload.selector || '';
+        const value = payload.value || '';
+        const extra = payload.extra || '';
+        const xpath = payload.xpath || '';
+
+        if (recorder) {
+          const actions = recorder.getActions();
+          const lastAction = actions[actions.length - 1];
+
+          const isDuplicate = lastAction &&
+            lastAction.type === actionType &&
+            lastAction.selector === selector &&
+            lastAction.value === value &&
+            (Date.now() - lastAction.timestamp) < 1000;
+
+          if (actionType === 'input') {
+            if (lastAction && lastAction.type === 'input' && lastAction.selector === selector) {
+              lastAction.value = value;
+              lastAction.timestamp = Date.now();
+              updateActionsDisplay();
+              return;
+            }
+          }
+
+          if (isDuplicate) {
+            return;
+          }
+
+          recorder.recordAction({
+            type: actionType,
+            selector: selector,
+            value: value,
+            extra: extra,
+            xpath: xpath,
+            timestamp: Date.now()
+          });
+
+          updateActionsDisplay();
+          const actionCount = recorder.getActions().length;
+          recordingStatus.textContent = `⏺️ Recording... (${actionCount} actions)`;
+        }
+
+        return;
+      }
+
+      if (e.message.startsWith('CHROMATION_RECORD:')) {
         const parts = e.message.replace('CHROMATION_RECORD:', '').split(':');
         const actionType = parts[0];
         const selector = parts[1];
@@ -984,8 +1233,35 @@ function monitorWebviewActions() {
         const extra = parts[3] || ''; // Additional context
         const xpath = parts[4] || ''; // XPath for better reliability
         
-        // Record the action with enriched data
+        // Smart deduplication - prevent recording duplicate consecutive actions
         if (recorder) {
+          const actions = recorder.getActions();
+          const lastAction = actions[actions.length - 1];
+          
+          // Check if this is a duplicate of the last action
+          const isDuplicate = lastAction && 
+            lastAction.type === actionType &&
+            lastAction.selector === selector &&
+            lastAction.value === value &&
+            (Date.now() - lastAction.timestamp) < 1000; // Within 1 second
+          
+          // Special handling for input events - only record the final value
+          if (actionType === 'input') {
+            // If last action was also input on same selector, just update it
+            if (lastAction && lastAction.type === 'input' && lastAction.selector === selector) {
+              lastAction.value = value;
+              lastAction.timestamp = Date.now();
+              updateActionsDisplay();
+              return; // Don't add new action
+            }
+          }
+          
+          // Skip if duplicate
+          if (isDuplicate) {
+            return;
+          }
+          
+          // Record the action with enriched data
           recorder.recordAction({
             type: actionType,
             selector: selector,
@@ -1089,6 +1365,10 @@ function updateActionsDisplay() {
           icon = '🧭';
           displayText = `Navigate to ${action.value}`;
           break;
+        case 'waitForPageLoad':
+          icon = '⏳';
+          displayText = `Wait for page load: ${action.extra || 'Page ready'}`;
+          break;
         default:
           icon = '•';
           displayText = `${action.type} on ${action.selector}`;
@@ -1130,6 +1410,10 @@ async function exportScript(format) {
 
 // Replay recorded actions
 let isReplaying = false;
+let replayReport = { passed: [], failed: [], total: 0 };
+let replayStartedAt = 0;
+let replayEndedAt = 0;
+let lastReplayExecutionReport = null;
 
 function updateReplayButton() {
   const replayBtn = document.getElementById('replay-record-btn');
@@ -1139,7 +1423,7 @@ function updateReplayButton() {
   replayBtn.disabled = actions.length === 0 || isReplaying || isRecording;
 }
 
-async function replayActions(speed = 1.0) {
+async function replayActions(speed = 1.0, engine = 'webview', policy = { timeoutMs: 8000, retries: 1, continueOnFailure: true }) {
   if (!recorder || isReplaying || isRecording) return;
   
   const actions = recorder.getActions();
@@ -1149,29 +1433,90 @@ async function replayActions(speed = 1.0) {
   }
   
   isReplaying = true;
+  replayReport = { passed: [], failed: [], total: actions.length };
+  replayStartedAt = Date.now();
+  lastReplayExecutionReport = null;
+  
   const replayBtn = document.getElementById('replay-record-btn');
   if (replayBtn) {
     replayBtn.disabled = true;
-    replayBtn.textContent = '⏸️ Replaying...';
+    replayBtn.innerHTML = `
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+        <rect x="6" y="6" width="4" height="12"></rect>
+        <rect x="14" y="6" width="4" height="12"></rect>
+      </svg>
+      Replaying...
+    `;
   }
   
-  statusText.textContent = `Replaying ${actions.length} actions at ${speed}x speed...`;
+  statusText.textContent = engine === 'playwright'
+    ? `Running ${actions.length} actions with Playwright executor...`
+    : `Replaying ${actions.length} actions at ${speed}x speed...`;
   
   try {
+    if (engine === 'playwright') {
+      await replayActionsWithExecutor(actions, policy);
+      replayEndedAt = Date.now();
+      statusText.textContent = `Execution completed: ${replayReport.passed.length} passed, ${replayReport.failed.length} failed`;
+      showReplayReport();
+      return;
+    }
+
     for (let i = 0; i < actions.length; i++) {
       const action = actions[i];
       
       // Highlight current action being replayed
       highlightReplayingAction(i);
       
-      await replayAction(action);
+      let stepResult = null;
+      for (let attempt = 0; attempt <= policy.retries; attempt++) {
+        const stepStartedAt = Date.now();
+
+        try {
+          await runReplayActionWithTimeout(action, policy.timeoutMs);
+          const screenshot = await captureWebviewScreenshotBase64();
+          stepResult = {
+            index: i,
+            action,
+            error: null,
+            duration: Date.now() - stepStartedAt,
+            screenshot,
+          };
+          replayReport.passed.push(stepResult);
+          break;
+        } catch (error) {
+          if (attempt < policy.retries) {
+            await new Promise((resolve) => setTimeout(resolve, 250));
+            continue;
+          }
+
+          console.error(`Action ${i} failed:`, error);
+          const screenshot = await captureWebviewScreenshotBase64();
+          stepResult = {
+            index: i,
+            action,
+            error: error.message,
+            duration: Date.now() - stepStartedAt,
+            screenshot,
+          };
+          replayReport.failed.push(stepResult);
+        }
+      }
+
+      if (stepResult && stepResult.error && !policy.continueOnFailure) {
+        break;
+      }
       
       // Wait between actions (adjusted by speed)
       const delay = 500 / speed; // Base delay of 500ms
       await new Promise(resolve => setTimeout(resolve, delay));
     }
     
-    statusText.textContent = 'Replay completed successfully';
+    statusText.textContent = `Replay completed: ${replayReport.passed.length} passed, ${replayReport.failed.length} failed`;
+    replayEndedAt = Date.now();
+    
+    // Show report
+    showReplayReport();
   } catch (error) {
     console.error('Replay error:', error);
     statusText.textContent = 'Replay failed: ' + error.message;
@@ -1179,9 +1524,87 @@ async function replayActions(speed = 1.0) {
     isReplaying = false;
     if (replayBtn) {
       replayBtn.disabled = false;
-      replayBtn.textContent = '▶ Replay';
+      replayBtn.innerHTML = `
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="5 3 19 12 5 21 5 3"></polygon>
+        </svg>
+        Replay
+      `;
     }
     clearReplayHighlight();
+  }
+}
+
+async function replayActionsWithExecutor(actions, policy) {
+  if (!chromationBrowser || typeof chromationBrowser.executeRecordedActionsWithReport !== 'function') {
+    throw new Error('ScriptExecutor replay is not available in this build. Please restart the app.');
+  }
+
+  const { execution, report } = await chromationBrowser.executeRecordedActionsWithReport('Recorder Replay', {
+    headless: false,
+    continueOnFailure: policy.continueOnFailure,
+    defaultStepTimeoutMs: policy.timeoutMs,
+    retryPolicy: {
+      maxRetries: policy.retries,
+      retryDelayMs: 250,
+    },
+    evidence: {
+      screenshotOnFailure: true,
+      captureConsoleLogs: true,
+      captureNetworkSummary: true,
+      captureDomSnapshotOnFailure: true,
+    },
+  });
+
+  replayReport = {
+    total: execution.summary.total,
+    passed: execution.steps
+      .filter((step) => step.status === 'passed')
+      .map((step) => ({
+        index: step.index,
+        action: step.action,
+        error: null,
+        duration: step.durationMs,
+        screenshot: step.evidence?.screenshotBase64 || null,
+      })),
+    failed: execution.steps
+      .filter((step) => step.status === 'failed')
+      .map((step) => ({
+        index: step.index,
+        action: step.action,
+        error: step.error || 'Execution failed',
+        duration: step.durationMs,
+        screenshot: step.evidence?.screenshotBase64 || null,
+      })),
+  };
+
+  lastReplayExecutionReport = report;
+}
+
+async function runReplayActionWithTimeout(action, timeoutMs) {
+  return await Promise.race([
+    replayAction(action),
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(`Replay step timeout after ${timeoutMs}ms`)), timeoutMs);
+    }),
+  ]);
+}
+
+async function captureWebviewScreenshotBase64() {
+  try {
+    if (!browserWebview || typeof browserWebview.capturePage !== 'function') {
+      return null;
+    }
+
+    const image = await browserWebview.capturePage();
+    if (!image || typeof image.toPNG !== 'function') {
+      return null;
+    }
+
+    return image.toPNG().toString('base64');
+  } catch (error) {
+    console.warn('Failed to capture webview screenshot:', error);
+    return null;
   }
 }
 
@@ -1221,6 +1644,20 @@ async function replayAction(action) {
           browserWebview.addEventListener('did-finish-load', listener);
         });
         break;
+      
+      case 'waitForPageLoad':
+        // Wait for page to be fully loaded and interactive
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        const isReady = await browserWebview.executeJavaScript(`
+          (function() {
+            return document.readyState === 'complete';
+          })();
+        `);
+        // Additional wait to ensure page is interactive
+        if (isReady) {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+        break;
         
       case 'scroll':
         await browserWebview.executeJavaScript(`
@@ -1237,8 +1674,42 @@ async function replayAction(action) {
       case 'rightclick':
         await browserWebview.executeJavaScript(`
           (function() {
-            const element = document.querySelector('${escapeSelector(action.selector)}');
+            function findReplayElement(selector, xpath, expectedText) {
+              if (xpath) {
+                try {
+                  const xpNode = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+                  if (xpNode) return xpNode;
+                } catch (err) {
+                  // ignore xpath parse issues and continue with css fallback
+                }
+              }
+
+              const direct = document.querySelector(selector);
+              if (direct) {
+                const all = document.querySelectorAll(selector);
+                if (all.length <= 1) return direct;
+
+                if (expectedText) {
+                  const match = Array.from(all).find((node) => (node.textContent || '').trim().includes(expectedText));
+                  if (match) return match;
+                }
+
+                return direct;
+              }
+
+              // Fallbacks for dynamic search pages where aria-label selectors can disappear.
+              if (selector.includes('[aria-label="Search"]')) {
+                return document.querySelector('button[aria-label="Search"], button[type="submit"], input[type="submit"], [role="button"][aria-label*="Search"]');
+              }
+
+              return null;
+            }
+
+            const element = findReplayElement('${escapeSelector(action.selector)}', '${escapeValue(action.xpath || '')}', '${escapeValue(action.value || '')}');
             if (element) {
+              if (element.scrollIntoView) {
+                element.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
+              }
               ${action.type === 'doubleclick' ? 'element.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));' : 
                 action.type === 'rightclick' ? 'element.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true }));' :
                 'element.click();'}
@@ -1359,7 +1830,19 @@ async function replayAction(action) {
       case 'submit':
         await browserWebview.executeJavaScript(`
           (function() {
-            const element = document.querySelector('${escapeSelector(action.selector)}');
+            let element = null;
+            if ('${escapeValue(action.xpath || '')}') {
+              try {
+                element = document.evaluate('${escapeValue(action.xpath || '')}', document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+              } catch (err) {
+                // ignore and continue with css fallback
+              }
+            }
+
+            if (!element) {
+              element = document.querySelector('${escapeSelector(action.selector)}');
+            }
+
             if (element) {
               if (element.tagName === 'FORM') {
                 element.submit();
@@ -1368,6 +1851,29 @@ async function replayAction(action) {
               }
               return true;
             }
+
+            // Fallback 1: submit active element's parent form.
+            const active = document.activeElement;
+            if (active && active.form) {
+              if (active.form.requestSubmit) {
+                active.form.requestSubmit();
+              } else {
+                active.form.submit();
+              }
+              return true;
+            }
+
+            // Fallback 2: submit the first available form (common on search pages).
+            const form = document.querySelector('form[role="search"], form');
+            if (form) {
+              if (form.requestSubmit) {
+                form.requestSubmit();
+              } else {
+                form.submit();
+              }
+              return true;
+            }
+
             throw new Error('Element not found: ${action.selector}');
           })();
         `);
@@ -1477,14 +1983,18 @@ function toggleHealing() {
   if (!healingEngine) return;
   
   const isEnabled = healingEngine.isEnabled();
+  const menuHealing = document.getElementById('menu-healing');
+  const statusSpan = menuHealing?.querySelector('.menu-status');
   
   if (isEnabled) {
     healingEngine.disable();
-    btnHealing.classList.remove('active');
+    if (statusSpan) statusSpan.textContent = 'OFF';
+    if (statusSpan) statusSpan.style.color = '#ea4335';
     healingStatus.textContent = '🔧 Auto-heal: OFF';
   } else {
     healingEngine.enable();
-    btnHealing.classList.add('active');
+    if (statusSpan) statusSpan.textContent = 'ON';
+    if (statusSpan) statusSpan.style.color = '#34a853';
     healingStatus.textContent = '🔧 Auto-heal: ON';
   }
 }
@@ -1504,13 +2014,18 @@ ipcRenderer.on('toggle-scraper', () => {
 
 ipcRenderer.on('toggle-healing', (event, enabled) => {
   if (healingEngine) {
+    const menuHealing = document.getElementById('menu-healing');
+    const statusSpan = menuHealing?.querySelector('.menu-status');
+    
     if (enabled) {
       healingEngine.enable();
-      btnHealing.classList.add('active');
+      if (statusSpan) statusSpan.textContent = 'ON';
+      if (statusSpan) statusSpan.style.color = '#34a853';
       healingStatus.textContent = '🔧 Auto-heal: ON';
     } else {
       healingEngine.disable();
-      btnHealing.classList.remove('active');
+      if (statusSpan) statusSpan.textContent = 'OFF';
+      if (statusSpan) statusSpan.style.color = '#ea4335';
       healingStatus.textContent = '🔧 Auto-heal: OFF';
     }
   }
@@ -1623,93 +2138,6 @@ function truncateText(text, maxLength) {
   if (text.length <= maxLength) return text;
   return text.substring(0, maxLength - 3) + '...';
 }
-
-// ===== WINDOW CONTROLS =====
-document.addEventListener('DOMContentLoaded', () => {
-  // Tab controls
-  const btnNewTab = document.getElementById('btn-new-tab');
-  if (btnNewTab) {
-    btnNewTab.addEventListener('click', createNewTab);
-  }
-  
-  // Window controls
-  const minimizeBtn = document.querySelector('.minimize-btn');
-  const maximizeBtn = document.querySelector('.maximize-btn');
-  const closeBtn = document.querySelector('.close-btn');
-  
-  if (minimizeBtn) {
-    minimizeBtn.addEventListener('click', () => {
-      ipcRenderer.send('window-minimize');
-    });
-  }
-  
-  if (maximizeBtn) {
-    maximizeBtn.addEventListener('click', () => {
-      ipcRenderer.send('window-maximize');
-    });
-  }
-  
-  if (closeBtn) {
-    closeBtn.addEventListener('click', () => {
-      ipcRenderer.send('window-close');
-    });
-  }
-  
-  // Render initial tabs
-  renderTabs();
-  
-  // Menu controls
-  const btnMenu = document.getElementById('btn-menu');
-  const menuDropdown = document.getElementById('menu-dropdown');
-  
-  if (btnMenu && menuDropdown) {
-    // Toggle menu dropdown
-    btnMenu.addEventListener('click', (e) => {
-      e.stopPropagation();
-      menuDropdown.classList.toggle('hidden');
-    });
-    
-    // Close menu when clicking outside
-    document.addEventListener('click', (e) => {
-      if (!menuDropdown.classList.contains('hidden') && 
-          !menuDropdown.contains(e.target) && 
-          e.target !== btnMenu) {
-        menuDropdown.classList.add('hidden');
-      }
-    });
-    
-    // Menu item handlers
-    document.getElementById('menu-recordings')?.addEventListener('click', () => {
-      menuDropdown.classList.add('hidden');
-      showSavedRecordings();
-    });
-    
-    document.getElementById('menu-history')?.addEventListener('click', () => {
-      menuDropdown.classList.add('hidden');
-      showBrowsingHistory();
-    });
-    
-    document.getElementById('menu-help')?.addEventListener('click', () => {
-      menuDropdown.classList.add('hidden');
-      showHelp();
-    });
-    
-    document.getElementById('menu-update')?.addEventListener('click', () => {
-      menuDropdown.classList.add('hidden');
-      checkForUpdates();
-    });
-    
-    document.getElementById('menu-about')?.addEventListener('click', () => {
-      menuDropdown.classList.add('hidden');
-      showAbout();
-    });
-    
-    document.getElementById('menu-theme')?.addEventListener('click', () => {
-      menuDropdown.classList.add('hidden');
-      toggleTheme();
-    });
-  }
-});
 
 // ===== MENU FUNCTIONS =====
 
@@ -1893,6 +2321,9 @@ function checkForUpdates() {
 function showAbout() {
   statusText.textContent = 'About Chromation AutoHeal Browser';
   
+  toggleTool('recorder');
+  sidePanel.classList.add('open');
+  
   // Create about panel
   panelTitle.textContent = 'About';
   panelContent.innerHTML = `
@@ -1902,8 +2333,8 @@ function showAbout() {
         <h2 style="margin-bottom: 8px; color: #202124;">Chromation AutoHeal Browser</h2>
         <p style="font-size: 16px; color: #1a73e8; margin-bottom: 24px;">Version 0.2.0</p>
         
-        <div style="background: #f8f9fa; padding: 16px; border-radius: 8px; text-align: left; margin-bottom: 16px;">
-          <p style="font-size: 13px; color: #5f6368; line-height: 1.8;">
+        <div style="background: var(--bg-secondary); padding: 16px; border-radius: 8px; text-align: left; margin-bottom: 16px;">
+          <p style="font-size: 13px; color: var(--text-secondary); line-height: 1.8;">
             A powerful browser automation and testing tool with AI-powered self-healing capabilities. 
             Built with Electron, TypeScript, and modern web technologies.
           </p>
@@ -1939,6 +2370,428 @@ function showAbout() {
   sidePanel.classList.add('open');
 }
 
+// ===== RECORDING SAVE/LOAD/IMPORT FUNCTIONS =====
+
+async function saveRecording() {
+  if (!recorder) return;
+  
+  const actions = recorder.getActions();
+  if (actions.length === 0) {
+    statusText.textContent = 'No actions to save';
+    return;
+  }
+  
+  // Prompt for name with fallback when prompt is unavailable.
+  const defaultName = `Recording_${new Date().toLocaleDateString().replace(/\//g, '-')}_${Date.now()}`;
+  let name = defaultName;
+  try {
+    const promptedName = prompt('Enter a name for this recording:', defaultName);
+    if (typeof promptedName === 'string' && promptedName.trim()) {
+      name = promptedName.trim();
+    }
+  } catch (error) {
+    console.warn('Prompt not available, using default recording name:', error);
+  }
+  
+  try {
+    const result = await ipcRenderer.invoke('save-recording', { name, actions });
+    
+    if (result.success) {
+      statusText.textContent = `Recording "${name}" saved successfully`;
+      // Show notification
+      showNotification('✅ Recording saved!', `${actions.length} actions saved to ${result.filename}`);
+    } else {
+      statusText.textContent = 'Failed to save recording';
+      alert('Failed to save recording: ' + result.error);
+    }
+  } catch (error) {
+    console.error('Save error:', error);
+    statusText.textContent = 'Failed to save recording';
+    alert('Failed to save recording: ' + error.message);
+  }
+}
+
+async function importRecording() {
+  try {
+    const result = await ipcRenderer.invoke('import-recording');
+    
+    if (result.canceled) {
+      return;
+    }
+    
+    if (result.success && result.recording) {
+      // Load the imported recording
+      if (recorder && result.recording.actions) {
+        recorder.setActions(result.recording.actions);
+        recordedActions = result.recording.actions;
+        updateActionsDisplay();
+        statusText.textContent = `Imported recording: ${result.recording.name}`;
+        showNotification('✅ Recording imported!', `${result.recording.actions.length} actions loaded`);
+      }
+    } else {
+      statusText.textContent = 'Failed to import recording';
+      alert('Failed to import recording: ' + result.error);
+    }
+  } catch (error) {
+    console.error('Import error:', error);
+    statusText.textContent = 'Failed to import recording';
+    alert('Failed to import recording: ' + error.message);
+  }
+}
+
+async function showSavedRecordings() {
+  try {
+    const result = await ipcRenderer.invoke('load-recordings');
+    
+    if (!result.success) {
+      statusText.textContent = 'Failed to load recordings';
+      return;
+    }
+    
+    const recordings = result.recordings;
+    
+    // Show recordings in side panel
+    panelTitle.textContent = 'Saved Recordings';
+    panelContent.innerHTML = `
+      <div class="panel-section">
+        <h4 class="panel-heading">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"></path>
+          </svg>
+          Saved Recordings
+        </h4>
+        <p class="panel-description">${recordings.length} recording(s) available</p>
+      </div>
+      
+      <div class="panel-card">
+        <div id="recordings-list" class="recordings-list">
+          ${recordings.length === 0 ? `
+            <div class="empty-state">
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"></path>
+              </svg>
+              <p>No saved recordings yet</p>
+              <span>Record some actions and save them</span>
+            </div>
+          ` : recordings.map(rec => `
+            <div class="recording-item" data-filename="${rec.filename}">
+              <div class="recording-info">
+                <h5 class="recording-name">${rec.name}</h5>
+                <p class="recording-meta">
+                  ${rec.actionCount} actions • ${new Date(rec.timestamp).toLocaleString()}
+                </p>
+              </div>
+              <div class="recording-actions">
+                <button class="action-icon-btn load-recording" title="Load" data-filename="${rec.filename}">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="7 10 12 15 17 10"></polyline>
+                    <line x1="12" y1="15" x2="12" y2="3"></line>
+                  </svg>
+                </button>
+                <button class="action-icon-btn replay-recording" title="Replay" data-filename="${rec.filename}">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                  </svg>
+                </button>
+                <button class="action-icon-btn delete-recording" title="Delete" data-filename="${rec.filename}">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="3 6 5 6 21 6"></polyline>
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                  </svg>
+                </button>
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+    
+    // Add event listeners
+    document.querySelectorAll('.load-recording').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        const filename = e.currentTarget.dataset.filename;
+        await loadRecording(filename);
+      });
+    });
+    
+    document.querySelectorAll('.replay-recording').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        const filename = e.currentTarget.dataset.filename;
+        await loadAndReplayRecording(filename);
+      });
+    });
+    
+    document.querySelectorAll('.delete-recording').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        const filename = e.currentTarget.dataset.filename;
+        if (confirm('Are you sure you want to delete this recording?')) {
+          await deleteRecording(filename);
+          showSavedRecordings(); // Refresh list
+        }
+      });
+    });
+    
+    sidePanel.classList.add('open');
+    statusText.textContent = `${recordings.length} saved recording(s) found`;
+    
+  } catch (error) {
+    console.error('Failed to show recordings:', error);
+    statusText.textContent = 'Failed to load recordings';
+  }
+}
+
+async function loadRecording(filename) {
+  try {
+    const result = await ipcRenderer.invoke('load-recording', filename);
+    
+    if (result.success && result.recording) {
+      if (recorder && result.recording.actions) {
+        recorder.setActions(result.recording.actions);
+        recordedActions = result.recording.actions;
+        
+        // Switch to recorder panel
+        toggleTool('recorder');
+        updateActionsDisplay();
+        
+        statusText.textContent = `Loaded: ${result.recording.name}`;
+        showNotification('✅ Recording loaded!', `${result.recording.actions.length} actions ready`);
+      }
+    }
+  } catch (error) {
+    console.error('Load error:', error);
+    statusText.textContent = 'Failed to load recording';
+  }
+}
+
+async function loadAndReplayRecording(filename) {
+  await loadRecording(filename);
+  // Wait a bit for the UI to update
+  setTimeout(() => {
+    replayActions(1.0);
+  }, 500);
+}
+
+async function deleteRecording(filename) {
+  try {
+    const result = await ipcRenderer.invoke('delete-recording', filename);
+    
+    if (result.success) {
+      statusText.textContent = 'Recording deleted';
+      showNotification('🗑️ Deleted', 'Recording removed successfully');
+    } else {
+      alert('Failed to delete recording: ' + result.error);
+    }
+  } catch (error) {
+    console.error('Delete error:', error);
+    alert('Failed to delete recording: ' + error.message);
+  }
+}
+
+function showReplayReport() {
+  const totalActions = replayReport.total;
+  const passed = replayReport.passed.length;
+  const failed = replayReport.failed.length;
+  const passRate = ((passed / totalActions) * 100).toFixed(1);
+  
+  panelTitle.textContent = 'Replay Report';
+  panelContent.innerHTML = `
+    <div class="panel-section">
+      <h4 class="panel-heading">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+          <polyline points="14 2 14 8 20 8"></polyline>
+        </svg>
+        Replay Report
+      </h4>
+      <p class="panel-description">Test execution summary</p>
+    </div>
+    
+    <div class="panel-card">
+      <div class="card-header">
+        <h5>Summary</h5>
+        <span class="badge" style="background: ${failed === 0 ? '#34a853' : '#ea4335'}">${passRate}%</span>
+      </div>
+      <div class="card-content">
+        <div class="report-stats">
+          <div class="stat-item" style="background: #e6f4ea; border-left: 4px solid #34a853;">
+            <div class="stat-label">Passed</div>
+            <div class="stat-value" style="color: #34a853;">${passed}</div>
+          </div>
+          <div class="stat-item" style="background: #fce8e6; border-left: 4px solid #ea4335;">
+            <div class="stat-label">Failed</div>
+            <div class="stat-value" style="color: #ea4335;">${failed}</div>
+          </div>
+          <div class="stat-item" style="background: #e8f0fe; border-left: 4px solid #1a73e8;">
+            <div class="stat-label">Total</div>
+            <div class="stat-value" style="color: #1a73e8;">${totalActions}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    ${failed > 0 ? `
+    <div class="panel-card">
+      <div class="card-header">
+        <h5>Failed Actions</h5>
+        <span class="badge" style="background: #ea4335;">${failed}</span>
+      </div>
+      <div class="card-content">
+        ${replayReport.failed.map(item => `
+          <div class="failed-action-item">
+            <div class="failed-action-header">
+              <span class="failed-action-number">#${item.index + 1}</span>
+              <span class="failed-action-type">${item.action.type}</span>
+            </div>
+            <div class="failed-action-selector">${item.action.selector}</div>
+            <div class="failed-action-error">❌ ${item.error}</div>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+    ` : ''}
+
+    <div class="panel-card">
+      <div class="card-header">
+        <h5>Export Report</h5>
+      </div>
+      <div class="card-content">
+        <div class="button-group">
+          <button class="secondary-btn full-width" onclick="exportReplayReport('html')">Export HTML</button>
+          <button class="secondary-btn full-width" onclick="exportReplayReport('json')">Export JSON</button>
+          <button class="secondary-btn full-width" onclick="exportReplayReport('junit')">Export JUnit</button>
+        </div>
+      </div>
+    </div>
+    
+    <div class="panel-section">
+      <button class="secondary-btn full-width" onclick="toggleTool('recorder')">
+        Back to Recorder
+      </button>
+    </div>
+  `;
+  
+  sidePanel.classList.add('open');
+}
+
+async function exportReplayReport(format) {
+  if (!reporter) {
+    statusText.textContent = 'Reporter is not available';
+    return;
+  }
+
+  if (!replayReport || replayReport.total === 0) {
+    statusText.textContent = 'No replay report available yet. Run a replay first.';
+    return;
+  }
+
+  if (lastReplayExecutionReport) {
+    const richContent = await reporter.exportReport(lastReplayExecutionReport, format);
+    downloadReplayReport(richContent, format);
+    statusText.textContent = `Replay report exported as ${format.toUpperCase()}`;
+    return;
+  }
+
+  const steps = [];
+  for (const item of replayReport.passed) {
+    steps.push({
+      index: item.index,
+      name: `${item.action.type} ${item.action.selector}`,
+      status: 'passed',
+      error: '',
+      duration: item.duration || 0,
+      screenshot: item.screenshot || null,
+    });
+  }
+  for (const item of replayReport.failed) {
+    steps.push({
+      index: item.index,
+      name: `${item.action.type} ${item.action.selector}`,
+      status: 'failed',
+      error: item.error || 'Replay failed',
+      duration: item.duration || 0,
+      screenshot: item.screenshot || null,
+    });
+  }
+  steps.sort((a, b) => a.index - b.index);
+
+  const reportData = {
+    runId: `replay_${Date.now()}`,
+    testName: 'Replay Session',
+    startTime: replayStartedAt || Date.now(),
+    endTime: replayEndedAt || Date.now(),
+    duration: Math.max(0, (replayEndedAt || Date.now()) - (replayStartedAt || Date.now())),
+    status: replayReport.failed.length > 0 ? 'failed' : 'passed',
+    steps: steps.map((step) => ({
+      name: step.name,
+      status: step.status,
+      duration: step.duration || 0,
+      screenshot: step.screenshot || undefined,
+      error: step.error || undefined,
+    })),
+    screenshots: steps
+      .map((step) => step.screenshot)
+      .filter((value) => Boolean(value)),
+    healingEvents: 0,
+    networkLogs: [],
+    consoleLogs: [],
+  };
+
+  const content = await reporter.exportReport(reportData, format);
+  downloadReplayReport(content, format);
+  statusText.textContent = `Replay report exported as ${format.toUpperCase()}`;
+}
+
+async function exportAllReplayReports() {
+  if (!replayReport || replayReport.total === 0) {
+    statusText.textContent = 'No replay report available yet. Run a replay first.';
+    return;
+  }
+
+  const formats = ['html', 'json', 'junit', 'har', 'allure'];
+  for (const format of formats) {
+    await exportReplayReport(format);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+
+  statusText.textContent = 'Exported all replay report formats';
+}
+
+function downloadReplayReport(content, format) {
+  const extensionMap = {
+    html: 'html',
+    json: 'json',
+    junit: 'xml',
+    har: 'har',
+    allure: 'json',
+  };
+
+  const ext = extensionMap[format] || 'txt';
+  const mime = format === 'html'
+    ? 'text/html'
+    : format === 'json' || format === 'allure' || format === 'har'
+      ? 'application/json'
+      : 'application/xml';
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `replay-report-${Date.now()}.${ext}`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function showNotification(title, message) {
+  // Simple notification using status text
+  const prevText = statusText.textContent;
+  statusText.textContent = `${title} - ${message}`;
+  setTimeout(() => {
+    if (statusText.textContent === `${title} - ${message}`) {
+      statusText.textContent = prevText;
+    }
+  }, 3000);
+}
+
 // Update tab info when page loads
 if (browserWebview) {
   browserWebview.addEventListener('page-title-updated', (e) => {
@@ -1956,14 +2809,123 @@ if (browserWebview) {
   });
 }
 
-// Initialize on load
-window.addEventListener('DOMContentLoaded', () => {
+// ===== INITIALIZE ON LOAD =====
+document.addEventListener('DOMContentLoaded', () => {
   console.log('Chromation AutoHeal Browser UI loaded');
+  
+  // Initialize theme and Chromation modules
   initTheme();
   initChromation();
   
+  // Tab controls
+  const btnNewTab = document.getElementById('btn-new-tab');
+  if (btnNewTab) {
+    btnNewTab.addEventListener('click', createNewTab);
+  }
+  
+  // Window controls
+  const minimizeBtn = document.querySelector('.minimize-btn');
+  const maximizeBtn = document.querySelector('.maximize-btn');
+  const closeBtn = document.querySelector('.close-btn');
+  
+  if (minimizeBtn) {
+    minimizeBtn.addEventListener('click', () => {
+      ipcRenderer.send('window-minimize');
+    });
+  }
+  
+  if (maximizeBtn) {
+    maximizeBtn.addEventListener('click', () => {
+      ipcRenderer.send('window-maximize');
+    });
+  }
+  
+  if (closeBtn) {
+    closeBtn.addEventListener('click', () => {
+      ipcRenderer.send('window-close');
+    });
+  }
+  
+  // Render initial tabs
+  renderTabs();
+  
+  // Menu controls
+  const btnMenu = document.getElementById('btn-menu');
+  const menuDropdown = document.getElementById('menu-dropdown');
+  
+  if (btnMenu && menuDropdown) {
+    // Toggle menu dropdown
+    btnMenu.addEventListener('click', (e) => {
+      e.stopPropagation();
+      menuDropdown.classList.toggle('hidden');
+    });
+    
+    // Close menu when clicking outside
+    document.addEventListener('click', (e) => {
+      if (!menuDropdown.classList.contains('hidden') && 
+          !menuDropdown.contains(e.target) && 
+          e.target !== btnMenu) {
+        menuDropdown.classList.add('hidden');
+      }
+    });
+    
+    // Menu item handlers
+    document.getElementById('menu-inspector')?.addEventListener('click', () => {
+      menuDropdown.classList.add('hidden');
+      toggleTool('inspector');
+    });
+    
+    document.getElementById('menu-recorder')?.addEventListener('click', () => {
+      menuDropdown.classList.add('hidden');
+      toggleTool('recorder');
+    });
+    
+    document.getElementById('menu-scraper')?.addEventListener('click', () => {
+      menuDropdown.classList.add('hidden');
+      toggleTool('scraper');
+    });
+    
+    document.getElementById('menu-healing')?.addEventListener('click', () => {
+      menuDropdown.classList.add('hidden');
+      toggleHealing();
+    });
+    
+    document.getElementById('menu-recordings')?.addEventListener('click', () => {
+      menuDropdown.classList.add('hidden');
+      showSavedRecordings();
+    });
+    
+    document.getElementById('menu-history')?.addEventListener('click', () => {
+      menuDropdown.classList.add('hidden');
+      showBrowsingHistory();
+    });
+    
+    document.getElementById('menu-help')?.addEventListener('click', () => {
+      menuDropdown.classList.add('hidden');
+      showHelp();
+    });
+    
+    document.getElementById('menu-update')?.addEventListener('click', () => {
+      menuDropdown.classList.add('hidden');
+      checkForUpdates();
+    });
+    
+    document.getElementById('menu-about')?.addEventListener('click', () => {
+      menuDropdown.classList.add('hidden');
+      showAbout();
+    });
+    
+    document.getElementById('menu-theme')?.addEventListener('click', () => {
+      menuDropdown.classList.add('hidden');
+      toggleTheme();
+    });
+  }
+  
   // Set default home page
   setTimeout(() => {
-    navigateToUrl('https://duckduckgo.com');
+    if (browserWebview && browserWebview.src === '') {
+      browserWebview.src = 'https://duckduckgo.com';
+      urlInput.value = 'https://duckduckgo.com';
+    }
   }, 1000);
 });
