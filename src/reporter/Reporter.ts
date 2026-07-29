@@ -7,17 +7,25 @@
 
 import { ExecutionResult, NetworkEntry } from '../executor/types';
 import type { HealingResult } from '../healing/HealingEngine';
+import { HistoryQuery, RunAnalytics, RunHistoryStore } from './RunHistoryStore';
 
 export type ReportFormat = 'html' | 'pdf' | 'json' | 'junit' | 'har' | 'allure';
 
 export interface TestStep {
   name: string;
-  status: 'passed' | 'failed' | 'skipped';
+  status: 'passed' | 'failed' | 'skipped' | 'cancelled';
   duration: number;
+  index?: number;
+  actionType?: string;
+  selector?: string;
+  retries?: number;
   screenshot?: string;
   error?: string;
   healedLocators?: string[];
   healing?: HealingResult;
+  expected?: string;
+  actual?: string;
+  attachments?: Array<{ name: string; contentType: string; data?: string; path?: string }>;
 }
 
 export interface ExecutionReport {
@@ -26,7 +34,7 @@ export interface ExecutionReport {
   startTime: number;
   endTime: number;
   duration: number;
-  status: 'passed' | 'failed';
+  status: 'passed' | 'failed' | 'cancelled';
   steps: TestStep[];
   screenshots: string[];
   healingEvents: number;
@@ -38,11 +46,13 @@ export interface ExecutionReport {
   };
   networkLogs?: NetworkEntry[];
   performanceMetrics?: Record<string, number>;
+  attachments?: Array<{ name: string; contentType: string; data?: string; path?: string }>;
 }
 
 export class Reporter {
   private currentReport: ExecutionReport | null = null;
   private reportHistory: ExecutionReport[] = [];
+  private runHistory = new RunHistoryStore();
 
   constructor() {
     console.log('Reporter initialized');
@@ -89,6 +99,7 @@ export class Reporter {
       this.currentReport.endTime = Date.now();
       this.currentReport.duration = this.currentReport.endTime - this.currentReport.startTime;
       this.reportHistory.push(this.currentReport);
+      this.runHistory.add(this.currentReport);
       
       console.log(`Report completed for: ${this.currentReport.testName}`);
       console.log(`Status: ${this.currentReport.status}`);
@@ -118,8 +129,7 @@ export class Reporter {
       case 'allure':
         return this.generateAllureReport(report);
       case 'pdf':
-        // TODO: Implement PDF generation
-        return 'PDF export placeholder';
+        return this.generatePDFReport(report);
       default:
         return '';
     }
@@ -127,17 +137,32 @@ export class Reporter {
 
   private generateHTMLReport(report: ExecutionReport): string {
     const healingDetails = report.healingDetails ?? [];
+    const passed = report.steps.filter((step) => step.status === 'passed').length;
+    const failed = report.steps.filter((step) => step.status === 'failed').length;
+    const skipped = report.steps.filter((step) => step.status === 'skipped').length;
+    const passRate = report.steps.length > 0
+      ? Math.round((passed / report.steps.length) * 1000) / 10
+      : 0;
     return `
 <!DOCTYPE html>
 <html>
 <head>
   <title>${report.testName} - Test Report</title>
   <style>
-    body { font-family: Arial, sans-serif; margin: 20px; }
+    body { font-family: Arial, sans-serif; margin: 32px auto; max-width: 1100px; color: #202124; }
     .passed { color: green; }
     .failed { color: red; }
+    .cancelled, .skipped { color: #8a5a00; }
     .summary { background: #f0f0f0; padding: 15px; border-radius: 5px; }
     .healing { background: #fff8e1; border-left: 4px solid #f9ab00; margin: 8px 0; padding: 10px; }
+    .metrics { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin: 16px 0; }
+    .metric { border: 1px solid #dadce0; border-radius: 8px; padding: 14px; }
+    .metric strong { display: block; font-size: 24px; }
+    .failure { border: 1px solid #dadce0; border-left: 4px solid #d93025; border-radius: 8px; margin: 10px 0; padding: 14px; }
+    .advice { background: #f1f3f4; border-radius: 5px; margin-top: 8px; padding: 8px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border-bottom: 1px solid #dadce0; padding: 9px; text-align: left; }
+    img { border: 1px solid #dadce0; border-radius: 6px; max-width: 100%; }
     code { overflow-wrap: anywhere; }
   </style>
 </head>
@@ -149,6 +174,26 @@ export class Reporter {
     <p>Steps: ${report.steps.length}</p>
     <p>Healing Events: ${report.healingEvents}</p>
   </div>
+  <div class="metrics">
+    <div class="metric">Pass rate<strong>${passRate}%</strong></div>
+    <div class="metric">Passed<strong>${passed}</strong></div>
+    <div class="metric">Failed<strong>${failed}</strong></div>
+    <div class="metric">Skipped<strong>${skipped}</strong></div>
+    <div class="metric">Duration<strong>${report.duration}ms</strong></div>
+  </div>
+  ${failed > 0 ? `
+  <h2>Action required</h2>
+  ${report.steps.filter((step) => step.status === 'failed').map((step) => `
+    <div class="failure">
+      <strong>Step #${(step.index ?? 0) + 1}: ${this.escapeHTML(step.actionType ?? step.name)}</strong><br>
+      <code>${this.escapeHTML(step.selector ?? '')}</code>
+      <p>${this.escapeHTML(step.error ?? 'Execution failed')}</p>
+      <div class="advice">${this.failureAdvice(step)}</div>
+      <small>${step.retries ?? 0} retries · ${step.duration}ms</small>
+      ${step.screenshot ? `<details open><summary>Failure screenshot</summary><img src="${this.screenshotSource(step.screenshot)}" alt="Failure evidence"></details>` : ''}
+    </div>
+  `).join('')}
+  ` : ''}
   ${healingDetails.length > 0 ? `
   <h2>Healing Events</h2>
   ${healingDetails.map((healing) => `
@@ -162,15 +207,15 @@ export class Reporter {
   `).join('')}
   ` : ''}
   <h2>Steps</h2>
-  <ul>
-    ${report.steps.map(step => `
-      <li class="${step.status}">
-        ${this.escapeHTML(step.name)} - ${step.status} (${step.duration}ms)
-        ${step.error ? `<br><em>Error: ${this.escapeHTML(step.error)}</em>` : ''}
-        ${step.healing ? `<br><em>Healed to ${this.escapeHTML(step.healing.healedSelector)} (${Math.round(step.healing.confidence * 100)}%)</em>` : ''}
-      </li>
-    `).join('')}
-  </ul>
+  <table><thead><tr><th>Step</th><th>Action</th><th>Target</th><th>Result</th><th>Time</th></tr></thead><tbody>
+    ${report.steps.map(step => `<tr>
+      <td>#${(step.index ?? 0) + 1}</td>
+      <td>${this.escapeHTML(step.actionType ?? step.name)}</td>
+      <td><code>${this.escapeHTML(step.selector ?? '')}</code></td>
+      <td class="${step.status}">${step.status}${step.healing ? ' · healed' : ''}</td>
+      <td>${step.duration}ms</td>
+    </tr>`).join('')}
+  </tbody></table>
 </body>
 </html>
     `.trim();
@@ -303,14 +348,20 @@ export class Reporter {
       startTime: execution.startedAt,
       endTime: execution.endedAt,
       duration: execution.durationMs,
-      status: execution.status,
+      status: execution.finalState === 'cancelled' ? 'cancelled' : execution.status,
       steps: execution.steps.map((step) => ({
+        index: step.index,
         name: `${step.index + 1}. ${step.action.type} ${step.action.selector}`,
+        actionType: step.action.type,
+        selector: step.action.selector,
         status: step.status,
         duration: step.durationMs,
+        retries: step.retries,
         screenshot: step.evidence?.screenshotBase64,
         error: step.error,
         healing: step.healing,
+        expected: step.expected,
+        actual: step.actual,
         healedLocators: step.healing
           ? [`${step.healing.originalSelector} -> ${step.healing.healedSelector}`]
           : undefined,
@@ -327,9 +378,11 @@ export class Reporter {
       environment: {
         runtime: 'playwright-core',
       },
+      attachments: execution.attachments,
     };
 
     this.reportHistory.push(report);
+    this.runHistory.add(report);
     return report;
   }
 
@@ -339,7 +392,50 @@ export class Reporter {
 
   clearHistory(): void {
     this.reportHistory = [];
+    this.runHistory.clear();
     console.log('Report history cleared');
+  }
+
+  searchHistory(query?: HistoryQuery): ExecutionReport[] { return this.runHistory.search(query); }
+  getRunAnalytics(): RunAnalytics { return this.runHistory.analytics(); }
+  recordReport(report: ExecutionReport): ExecutionReport {
+    const stored = JSON.parse(JSON.stringify(report)) as ExecutionReport;
+    this.reportHistory.push(stored);
+    this.runHistory.add(stored);
+    return stored;
+  }
+  exportHistory(): string { return this.runHistory.export(); }
+  importHistory(value: string): void { this.runHistory.import(value); }
+
+  private generatePDFReport(report: ExecutionReport): string {
+    const lines = [
+      `Chromation Execution Report: ${report.testName}`,
+      `Status: ${report.status.toUpperCase()}`,
+      `Duration: ${report.duration} ms`,
+      `Steps: ${report.steps.length}  Healing events: ${report.healingEvents}`,
+      ...report.steps.map((step, index) =>
+        `${index + 1}. ${step.name} - ${step.status.toUpperCase()} (${step.duration} ms)${step.error ? ` - ${step.error}` : ''}`
+      ),
+    ];
+    const escape = (value: string) => value.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+    const stream = `BT /F1 11 Tf 40 800 Td ${lines.slice(0, 42).map((line, index) =>
+      `${index ? '0 -17 Td ' : ''}(${escape(line.slice(0, 110))}) Tj`
+    ).join(' ')} ET`;
+    const objects = [
+      '<< /Type /Catalog /Pages 2 0 R >>',
+      '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+      '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>',
+      `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`,
+      '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    ];
+    let pdf = '%PDF-1.4\n';
+    const offsets = [0];
+    objects.forEach((object, index) => { offsets.push(pdf.length); pdf += `${index + 1} 0 obj\n${object}\nendobj\n`; });
+    const xref = pdf.length;
+    pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.slice(1).map((offset) =>
+      `${String(offset).padStart(10, '0')} 00000 n `
+    ).join('\n')}\ntrailer << /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`;
+    return pdf;
   }
 
   private escapeHTML(value: string): string {
@@ -350,5 +446,26 @@ export class Reporter {
       '"': '&quot;',
       "'": '&#39;',
     })[character] ?? character);
+  }
+
+  private screenshotSource(value: string): string {
+    const normalized = value.trim();
+    return /^data:image\/(?:png|jpe?g|webp);base64,/i.test(normalized)
+      ? normalized
+      : `data:image/png;base64,${normalized}`;
+  }
+
+  private failureAdvice(step: TestStep): string {
+    const error = (step.error ?? '').toLowerCase();
+    if (error.includes('timeout')) {
+      return 'Check target readiness, add a deterministic wait, or adjust this step timeout.';
+    }
+    if (error.includes('not found') || error.includes('selector')) {
+      return 'Inspect the selector and its frame or shadow-root context, then review available healing candidates.';
+    }
+    if (step.actionType === 'upload') {
+      return 'Verify that the file exists and the target is an enabled file input.';
+    }
+    return 'Inspect this step, its preceding page state, and the captured diagnostic evidence.';
   }
 }

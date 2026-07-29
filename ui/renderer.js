@@ -7,11 +7,18 @@ const ipcRenderer = window.chromationAPI.ipc;
 
 // Initialize the browser engine
 let chromationBrowser;
-let inspector, recorder, healingEngine, scraperStudio, reporter;
+let inspector, recorder, healingEngine, scraperStudio, reporter, testProject, shortcutManager, suiteManager;
+let testGenerator, runScheduler, currentGeneratedDraft;
+let pluginManager;
 let isRecording = false;
 let isInspecting = false;
 let recordedActions = [];
 let uploadSelectionInProgress = false;
+let selectedStepIndex = null;
+let activeStepFilter = 'all';
+let stepSearchQuery = '';
+let executionElapsedTimer = null;
+let runHistoryHydrated = false;
 
 function normalizeRecordedActions(actions) {
   if (!Array.isArray(actions)) return [];
@@ -45,6 +52,9 @@ function escapeReportText(value) {
 // DOM elements
 const urlInput = document.getElementById('url-input');
 const browserWebview = document.getElementById('browser-webview');
+const browserView = document.getElementById('browser-view');
+const reportWorkspace = document.getElementById('report-workspace');
+const reportWorkspaceContent = document.getElementById('report-workspace-content');
 const sidePanel = document.getElementById('side-panel');
 const panelTitle = document.getElementById('panel-title');
 const panelContent = document.getElementById('panel-content');
@@ -68,6 +78,11 @@ document.addEventListener('click', (event) => {
   const reportExport = event.target.closest('[data-report-format]');
   if (reportExport) {
     exportReplayReport(reportExport.dataset.reportFormat);
+    return;
+  }
+  const exportAll = event.target.closest('[data-export-all-reports]');
+  if (exportAll) {
+    exportAllReplayReports();
     return;
   }
   const tool = event.target.closest('[data-open-tool]');
@@ -95,6 +110,11 @@ async function initChromation() {
       recordAction: chromationBrowser.recorder.record,
       getActions: chromationBrowser.recorder.getActions,
       updateLastAction: chromationBrowser.recorder.updateLastAction,
+      updateAction: chromationBrowser.recorder.updateAction,
+      duplicateAction: chromationBrowser.recorder.duplicateAction,
+      deleteAction: chromationBrowser.recorder.deleteAction,
+      moveAction: chromationBrowser.recorder.moveAction,
+      setActionDisabled: chromationBrowser.recorder.setActionDisabled,
       setActions: chromationBrowser.recorder.setActions,
       exportScript: chromationBrowser.recorder.exportScript,
       clearActions: chromationBrowser.recorder.clear,
@@ -102,6 +122,12 @@ async function initChromation() {
     healingEngine = chromationBrowser.healing;
     scraperStudio = chromationBrowser.scraper;
     reporter = chromationBrowser.reporter;
+    testProject = chromationBrowser.project;
+    shortcutManager = chromationBrowser.shortcuts;
+    suiteManager = chromationBrowser.suites;
+    testGenerator = chromationBrowser.generation;
+    runScheduler = chromationBrowser.scheduler;
+    pluginManager = chromationBrowser.plugins;
     
     statusText.textContent = 'Ready';
     console.log('Chromation modules initialized');
@@ -203,7 +229,7 @@ btnRefresh.addEventListener('click', () => {
 });
 
 btnHome.addEventListener('click', () => {
-  navigateToUrl('https://duckduckgo.com');
+  showHomeWorkspace();
 });
 
 // Close panel button
@@ -213,6 +239,9 @@ btnClosePanel.addEventListener('click', () => {
 
 // Toggle tools
 function toggleTool(tool) {
+  homeWorkspace?.classList.add('hidden');
+  reportWorkspace?.classList.add('hidden');
+  browserView?.classList.remove('hidden');
   // Activate selected tool
   const isOpen = sidePanel.classList.contains('open');
   const isSameTool = sidePanel.dataset.currentTool === tool;
@@ -223,6 +252,7 @@ function toggleTool(tool) {
   }
   
   sidePanel.dataset.currentTool = tool;
+  setActiveRailAction(tool);
   
   switch (tool) {
     case 'inspector':
@@ -237,10 +267,15 @@ function toggleTool(tool) {
   }
   
   sidePanel.classList.add('open');
+  const tab = tabs?.find?.((item) => item.id === activeTabId);
+  if (tab) tab.uiState = { ...(tab.uiState || {}), activeTool: tool, panelOpen: true };
 }
 
 function closePanel() {
   sidePanel.classList.remove('open');
+  setActiveRailAction('browse');
+  const tab = tabs?.find?.((item) => item.id === activeTabId);
+  if (tab) tab.uiState = { ...(tab.uiState || {}), activeTool: null, panelOpen: false };
   
   // Stop any active operations
   if (isInspecting && inspector) {
@@ -591,6 +626,8 @@ function displayDiscoveryResults(elements) {
   // Setup export buttons
   const exportPomBtn = document.getElementById('export-pom-btn');
   const exportJsonBtn = document.getElementById('export-json-btn');
+  const exportExcelBtn = document.getElementById('export-excel-btn');
+  const cancelScrapeBtn = document.getElementById('cancel-scrape-btn');
   const frameworkSelect = document.getElementById('pom-framework-select');
   
   exportPomBtn.onclick = () => exportPOM(elements, frameworkSelect.value);
@@ -755,6 +792,176 @@ async function displayElementInfo(elementData) {
   `).join('') || '<p class="hint">No locators generated</p>';
 }
 
+async function refreshP1AuthoringSummary() {
+  const summary = document.getElementById('project-summary');
+  if (summary && testProject) {
+    const project = await testProject.export();
+    summary.textContent = `${Object.keys(project.variables).length} variables · ${project.environments.length} environments · ${Object.keys(project.flows).length} flows · ${Object.keys(project.hooks).length} hooks`;
+  }
+  const healingSummary = document.getElementById('healing-history-summary');
+  if (healingSummary && healingEngine?.compareHistory) {
+    const comparisons = await healingEngine.compareHistory();
+    healingSummary.textContent = comparisons.length
+      ? comparisons.map((item) => `${item.selector}: ${item.attempts} attempts · ${Math.round(item.averageConfidence * 100)}% average`).join('\n')
+      : 'No healing history yet.';
+  }
+}
+
+function setActiveRailAction(value) {
+  document.querySelectorAll('.rail-action').forEach((button) => {
+    button.classList.toggle('active', button.dataset.tool === value || button.dataset.workspace === value || button.dataset.action === value);
+  });
+}
+
+function initializeP1AuthoringControls(healingPolicySelect) {
+  if (!testProject) return;
+  document.getElementById('add-project-variable-btn')?.addEventListener('click', async () => {
+    const name = document.getElementById('project-variable-name')?.value.trim();
+    const value = document.getElementById('project-variable-value')?.value ?? '';
+    if (!name) return showToast('Enter a variable name', 'error');
+    await testProject.setVariable(name, value);
+    await refreshP1AuthoringSummary();
+    showToast(`Variable ${name} saved`, 'success');
+  });
+  document.getElementById('save-environment-btn')?.addEventListener('click', async () => {
+    const name = document.getElementById('environment-name')?.value.trim();
+    const baseUrl = document.getElementById('environment-base-url')?.value.trim();
+    if (!name) return showToast('Enter an environment name', 'error');
+    await testProject.setEnvironment({ name, baseUrl: baseUrl || undefined, values: {} });
+    await refreshP1AuthoringSummary();
+    showToast(`Environment ${name} saved`, 'success');
+  });
+  document.getElementById('save-flow-btn')?.addEventListener('click', async () => {
+    const name = document.getElementById('reusable-flow-name')?.value.trim();
+    if (!name) return showToast('Enter a reusable flow name', 'error');
+    await testProject.setFlow(name, await recorder.getActions());
+    await refreshP1AuthoringSummary();
+    showToast(`Reusable flow ${name} saved`, 'success');
+  });
+  document.getElementById('save-hook-btn')?.addEventListener('click', async () => {
+    const hook = document.getElementById('hook-name')?.value;
+    await testProject.setHook(hook, await recorder.getActions());
+    await refreshP1AuthoringSummary();
+    showToast(`${hook} hook saved`, 'success');
+  });
+  if (healingPolicySelect && healingEngine) {
+    Promise.resolve(healingEngine.getApprovalPolicy()).then((policy) => { healingPolicySelect.value = policy; });
+    healingPolicySelect.addEventListener('change', () => {
+      healingEngine.setApprovalPolicy(healingPolicySelect.value);
+      showToast(`Healing policy: ${healingPolicySelect.value}`, 'success');
+    });
+  }
+  refreshP1AuthoringSummary();
+  const refreshShortcuts = async () => {
+    const target = document.getElementById('shortcut-reference');
+    if (target && shortcutManager) {
+      const reference = await shortcutManager.reference();
+      target.textContent = reference.map((item) => `${item.keys} — ${item.description} (${item.command})`).join('\n');
+    }
+  };
+  document.getElementById('save-shortcut-btn')?.addEventListener('click', async () => {
+    const command = document.getElementById('shortcut-command')?.value.trim();
+    const keys = document.getElementById('shortcut-keys')?.value.trim();
+    const description = document.getElementById('shortcut-description')?.value.trim();
+    if (!command || !keys || !description) return showToast('Complete all shortcut fields', 'error');
+    try {
+      await shortcutManager.set({ command, keys, description });
+      await refreshShortcuts();
+      showToast('Shortcut saved', 'success');
+    } catch (error) { showToast(error.message, 'error'); }
+  });
+  refreshShortcuts();
+  initializeSuiteControls();
+  initializeAdvancedP2Controls();
+}
+
+async function initializeAdvancedP2Controls() {
+  const preview = document.getElementById('generated-test-preview');
+  const approve = document.getElementById('approve-generated-test-btn');
+  const reject = document.getElementById('reject-generated-test-btn');
+  document.getElementById('generate-test-btn')?.addEventListener('click', async () => {
+    const prompt = document.getElementById('generation-prompt')?.value.trim();
+    if (!prompt) return showToast('Describe the test to generate', 'error');
+    currentGeneratedDraft = await testGenerator.generate(prompt);
+    if (preview) preview.textContent = JSON.stringify(currentGeneratedDraft.actions, null, 2);
+    approve.disabled = false; reject.disabled = false;
+  });
+  approve?.addEventListener('click', async () => {
+    if (!currentGeneratedDraft) return;
+    await testGenerator.approve(currentGeneratedDraft.id, 'Approved in Recorder');
+    recorder.setActions(await testGenerator.executableActions(currentGeneratedDraft.id));
+    updateActionsDisplay();
+    approve.disabled = true; reject.disabled = true;
+    showToast('Generated test approved and loaded', 'success');
+  });
+  reject?.addEventListener('click', async () => {
+    if (!currentGeneratedDraft) return;
+    await testGenerator.reject(currentGeneratedDraft.id, 'Rejected in Recorder');
+    if (preview) preview.textContent = 'Draft rejected. No actions were loaded.';
+    approve.disabled = true; reject.disabled = true;
+  });
+  const refreshSchedules = async () => {
+    const target = document.getElementById('schedule-summary');
+    if (!target || !runScheduler) return;
+    const schedules = await runScheduler.list();
+    target.textContent = schedules.length ? schedules.map((schedule) =>
+      `${schedule.name} · every ${schedule.intervalMinutes} min · next ${new Date(schedule.nextRunAt).toLocaleString()}`
+    ).join('\n') : 'No schedules configured.';
+  };
+  document.getElementById('create-schedule-btn')?.addEventListener('click', async () => {
+    const name = document.getElementById('schedule-name')?.value.trim();
+    const interval = Number(document.getElementById('schedule-interval')?.value || 0);
+    const suiteId = document.getElementById('suite-select')?.value;
+    if (!name || !suiteId) return showToast('Enter a schedule name and select a suite', 'error');
+    await runScheduler.create(name, interval, { suiteId, headless: true });
+    await refreshSchedules();
+    showToast('Headless schedule created', 'success');
+  });
+  refreshSchedules();
+}
+
+async function initializeSuiteControls() {
+  if (!suiteManager) return;
+  const select = document.getElementById('suite-select');
+  const refresh = async () => {
+    if (!select) return;
+    const suites = await suiteManager.list();
+    const selected = select.value;
+    select.innerHTML = '<option value="">Select a suite</option>' + suites.map((suite) =>
+      `<option value="${escapeReportText(suite.id)}">${escapeReportText(suite.name)} (${suite.tests.length})</option>`
+    ).join('');
+    select.value = selected;
+  };
+  document.getElementById('create-suite-btn')?.addEventListener('click', async () => {
+    const name = document.getElementById('suite-name')?.value.trim();
+    const tags = String(document.getElementById('suite-tags')?.value || '').split(',').map((tag) => tag.trim()).filter(Boolean);
+    if (!name) return showToast('Enter a suite name', 'error');
+    const suite = await suiteManager.create(name, { tags });
+    await refresh();
+    select.value = suite.id;
+    showToast(`Suite ${name} created`, 'success');
+  });
+  document.getElementById('add-suite-test-btn')?.addEventListener('click', async () => {
+    const name = document.getElementById('suite-test-name')?.value.trim();
+    const tags = String(document.getElementById('suite-test-tags')?.value || '').split(',').map((tag) => tag.trim()).filter(Boolean);
+    if (!select?.value || !name) return showToast('Select a suite and enter a test name', 'error');
+    await suiteManager.addTest(select.value, { name, tags, enabled: true, actions: await recorder.getActions() });
+    await refresh();
+    showToast(`Test ${name} added`, 'success');
+  });
+  document.getElementById('run-suite-matrix-btn')?.addEventListener('click', async () => {
+    if (!select?.value) return showToast('Select a suite', 'error');
+    const selectedSuite = (await suiteManager.list()).find((suite) => suite.id === select.value);
+    const browsers = String(document.getElementById('matrix-browsers')?.value || 'chrome').split(',').map((item) => item.trim()).filter(Boolean);
+    const concurrency = Number(document.getElementById('matrix-concurrency')?.value || 2);
+    const summary = document.getElementById('matrix-run-summary');
+    if (summary) summary.textContent = 'Matrix run in progress…';
+    const run = await suiteManager.runMatrix({ text: selectedSuite?.name, enabledOnly: true }, { browser: browsers }, concurrency, { headless: true });
+    if (summary) summary.textContent = `${run.summary.total} jobs · ${run.summary.passed} passed · ${run.summary.failed} failed · ${run.durationMs}ms`;
+  });
+  refresh();
+}
+
 // Recorder Panel
 function showRecorderPanel() {
   panelTitle.textContent = 'Recorder';
@@ -765,6 +972,9 @@ function showRecorderPanel() {
   const stopRecordBtn = document.getElementById('stop-record-btn');
   const exportScriptBtn = document.getElementById('export-script-btn');
   const replayRecordBtn = document.getElementById('replay-record-btn');
+  const pauseReplayBtn = document.getElementById('pause-replay-btn');
+  const resumeReplayBtn = document.getElementById('resume-replay-btn');
+  const stepReplayBtn = document.getElementById('step-replay-btn');
   const recordingModeSelect = document.getElementById('recording-mode-select');
   const exportFormatSelect = document.getElementById('export-format-select');
   const replayEngineSelect = document.getElementById('replay-engine-select');
@@ -774,7 +984,11 @@ function showRecorderPanel() {
   const reportFormatSelect = document.getElementById('report-format-select');
   const exportReportBtn = document.getElementById('export-report-btn');
   const exportAllReportsBtn = document.getElementById('export-all-reports-btn');
+  const runHistoryBtn = document.getElementById('run-history-btn');
   const replaySpeedSelect = document.getElementById('replay-speed-select');
+  const addAssertionBtn = document.getElementById('add-assertion-btn');
+  const closeStepEditorBtn = document.getElementById('close-step-editor-btn');
+  const healingPolicySelect = document.getElementById('healing-policy-select');
   
   // Add save, import buttons dynamically
   const panelSection = panelContent.querySelector('.panel-section:last-child');
@@ -828,6 +1042,10 @@ function showRecorderPanel() {
   
   if (replayRecordBtn) {
     replayRecordBtn.addEventListener('click', () => {
+      if (isReplaying) {
+        cancelReplay();
+        return;
+      }
       const policy = {
         timeoutMs: Math.max(1000, parseInt(replayTimeoutInput?.value || '8000', 10) || 8000),
         retries: Math.max(0, parseInt(replayRetriesInput?.value || '1', 10) || 0),
@@ -836,6 +1054,24 @@ function showRecorderPanel() {
       replayActions(parseFloat(replaySpeedSelect.value), replayEngineSelect?.value || 'webview', policy);
     });
   }
+  runHistoryBtn?.addEventListener('click', showRunHistoryPanel);
+  pauseReplayBtn?.addEventListener('click', pauseReplay);
+  resumeReplayBtn?.addEventListener('click', resumeReplay);
+  stepReplayBtn?.addEventListener('click', stepReplay);
+  addAssertionBtn?.addEventListener('click', addAssertionStep);
+  closeStepEditorBtn?.addEventListener('click', closeStepEditor);
+  replayEngineSelect?.addEventListener('change', () => updateReplayEngineGuidance(replayEngineSelect.value));
+  updateReplayEngineGuidance(replayEngineSelect?.value || 'webview');
+  document.getElementById('step-search-input')?.addEventListener('input', (event) => {
+    stepSearchQuery = event.target.value.toLowerCase().trim();
+    updateActionsDisplay();
+  });
+  document.querySelectorAll('[data-step-filter]').forEach((button) => button.addEventListener('click', () => {
+    activeStepFilter = button.dataset.stepFilter;
+    document.querySelectorAll('[data-step-filter]').forEach((item) => item.classList.toggle('active', item === button));
+    updateActionsDisplay();
+  }));
+  initializeP1AuthoringControls(healingPolicySelect);
   
   // Save recording button
   const saveBtn = document.getElementById('save-record-btn');
@@ -1476,18 +1712,55 @@ function injectRecordingScript() {
   }
 }
 
+function getActionIcon(type) {
+  const paths = {
+    navigate: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/>',
+    input: '<path d="M4 7h16v10H4zM7 10h.01M10 10h.01M13 10h.01M16 10h.01M8 14h8"/>',
+    click: '<path d="m8 3 8 15 2-6 3-2L8 3z"/>',
+    assert: '<path d="M4 12 9 17 20 6"/>',
+    upload: '<path d="M12 16V4m0 0L7 9m5-5 5 5M4 20h16"/>',
+    wait: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  };
+  const body = paths[type] || (type === 'waitForPageLoad' ? paths.wait : '<circle cx="12" cy="12" r="8"/><path d="M9 12h6"/>');
+  return `<svg class="step-action-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">${body}</svg>`;
+}
+
+function updateReplayEngineGuidance(engine) {
+  const target = document.getElementById('replay-engine-guidance');
+  if (!target) return;
+  target.innerHTML = engine === 'playwright'
+    ? '<strong>Playwright Executor</strong><span>Best for CI, frames, evidence, APIs, visual checks, accessibility, and performance. Opens an executor-controlled browser context.</span>'
+    : '<strong>In-Browser Replay</strong><span>Fastest for interactive debugging in the current tab. Advanced steps and some cross-origin/frame scenarios require Playwright.</span>';
+}
+
 function updateActionsDisplay() {
   if (!recorder) return;
+  updatePhase1Badges();
   
   const actionsList = document.getElementById('actions-list');
   if (!actionsList) return;
   
   const actions = recorder.getActions();
+  const statusForStep = (action, index) => {
+    if (action.metadata?.disabled) return 'disabled';
+    const failed = replayReport.failed.find((item) => item.index === index);
+    const passed = replayReport.passed.find((item) => item.index === index);
+    if ((failed || passed)?.healing) return 'healed';
+    if (failed) return 'failed';
+    if (passed) return 'passed';
+    return 'skipped';
+  };
+  const visibleActions = actions.map((action, index) => ({ action, index, status: statusForStep(action, index) })).filter(({ action, status }) => {
+    const haystack = `${action.type} ${action.selector || ''} ${action.value || ''}`.toLowerCase();
+    return (!stepSearchQuery || haystack.includes(stepSearchQuery)) && (activeStepFilter === 'all' || status === activeStepFilter);
+  });
   
   if (actions.length === 0) {
-    actionsList.innerHTML = '<p class="hint">No actions recorded yet</p>';
+    actionsList.innerHTML = '<div class="workflow-empty"><strong>No steps recorded</strong><span>Start recording or add an assertion to build your test.</span></div>';
+  } else if (visibleActions.length === 0) {
+    actionsList.innerHTML = '<div class="workflow-empty"><strong>No matching steps</strong><span>Try another search or status filter.</span></div>';
   } else {
-    actionsList.innerHTML = actions.map((action, index) => {
+    actionsList.innerHTML = visibleActions.map(({ action, index, status }) => {
       // Format action display based on type
       let displayText = '';
       let icon = '';
@@ -1511,7 +1784,7 @@ function updateActionsDisplay() {
           break;
         case 'input':
           icon = '⌨️';
-          displayText = `Type "${action.value.substring(0, 20)}${action.value.length > 20 ? '...' : ''}"`;
+          displayText = `Type "${String(action.value || '').substring(0, 20)}${String(action.value || '').length > 20 ? '...' : ''}"`;
           break;
         case 'keypress':
           icon = '🔤';
@@ -1562,21 +1835,304 @@ function updateActionsDisplay() {
           displayText = `${action.type} on ${action.selector}`;
       }
       
+      const locatorQuality = scoreRecordedLocator(action);
       return `
-        <div class="action-item">
+        <div class="action-item timeline-step status-${status}${action.metadata?.breakpoint ? ' has-breakpoint' : ''}${action.metadata?.disabled ? ' is-disabled' : ''}${selectedStepIndex === index ? ' selected' : ''}" data-action-index="${index}" draggable="${!isReplaying}">
           <span style="color: #666; font-size: 11px; min-width: 30px;">#${index + 1}</span>
-          <span style="font-size: 16px; margin-right: 8px;">${icon}</span>
+          <span class="step-icon-wrap">${getActionIcon(action.type)}</span>
           <div style="flex: 1;">
-            <div style="font-weight: 500; color: #202124;">${displayText}</div>
-            <div style="font-size: 11px; color: #5f6368; margin-top: 2px;">${action.selector}</div>
+            <div style="font-weight: 500; color: var(--text-primary);">${escapeReportText(displayText)}</div>
+            <div style="font-size: 11px; color: var(--text-secondary); margin-top: 2px;">${escapeReportText(action.selector)}</div>
+            ${locatorQuality ? `<div class="locator-quality-row"><span class="confidence-badge ${getConfidenceClass(locatorQuality.stability)}">${Math.round(locatorQuality.stability * 100)}% stable</span><span>${locatorQuality.unique ? 'Unique' : 'Check uniqueness'}</span></div>` : ''}
+          </div>
+          <div class="step-row-actions">
+            <button class="action-icon-btn" data-step-command="replay-step" data-action-index="${index}" title="Run this step">▶</button>
+            <button class="action-icon-btn" data-step-command="up" data-action-index="${index}" title="Move up" ${index === 0 ? 'disabled' : ''}>↑</button>
+            <button class="action-icon-btn" data-step-command="down" data-action-index="${index}" title="Move down" ${index === actions.length - 1 ? 'disabled' : ''}>↓</button>
+            <button class="action-icon-btn" data-step-command="duplicate" data-action-index="${index}" title="Duplicate">⧉</button>
+            <button class="action-icon-btn${action.metadata?.breakpoint ? ' active-breakpoint' : ''}" data-step-command="breakpoint" data-action-index="${index}" title="Toggle breakpoint">●</button>
+            <button class="action-icon-btn" data-step-command="disable" data-action-index="${index}" title="${action.metadata?.disabled ? 'Enable' : 'Disable'}">${action.metadata?.disabled ? '○' : '⊘'}</button>
+            <button class="action-icon-btn delete-step" data-step-command="delete" data-action-index="${index}" title="Delete">×</button>
           </div>
         </div>
       `;
     }).join('');
+    actionsList.querySelectorAll('.action-item').forEach((item) => {
+      item.addEventListener('click', (event) => {
+        if (event.target.closest('[data-step-command]')) return;
+        openStepEditor(Number(item.dataset.actionIndex));
+      });
+    });
+    actionsList.querySelectorAll('[data-step-command]').forEach((button) => {
+      button.addEventListener('click', () => {
+        handleStepCommand(button.dataset.stepCommand, Number(button.dataset.actionIndex));
+      });
+    });
+    actionsList.querySelectorAll('.action-item[draggable="true"]').forEach((item) => {
+      item.addEventListener('dragstart', (event) => event.dataTransfer.setData('text/step-index', item.dataset.actionIndex));
+      item.addEventListener('dragover', (event) => { event.preventDefault(); item.classList.add('drag-over'); });
+      item.addEventListener('dragleave', () => item.classList.remove('drag-over'));
+      item.addEventListener('drop', (event) => {
+        event.preventDefault();
+        item.classList.remove('drag-over');
+        const from = Number(event.dataTransfer.getData('text/step-index'));
+        const to = Number(item.dataset.actionIndex);
+        if (Number.isInteger(from) && from !== to) {
+          recorder.moveAction(from, to);
+          selectedStepIndex = to;
+          updateActionsDisplay();
+        }
+      });
+    });
   }
   
   // Update replay button state
   updateReplayButton();
+  if (selectedStepIndex !== null) renderStepEditor(selectedStepIndex);
+}
+
+function scoreRecordedLocator(action) {
+  if (!action?.selector || !action.locatorFingerprint) return null;
+  const attributes = action.locatorFingerprint.attributes || {};
+  let stability = 0.55;
+  if (attributes['data-testid'] || attributes['data-test'] || attributes['data-qa']) stability = 0.98;
+  else if (attributes.id && !/\d{4,}|react-aria|html5_/i.test(attributes.id)) stability = 0.9;
+  else if (attributes.name) stability = 0.8;
+  else if (attributes['aria-label']) stability = 0.76;
+  return { stability, unique: !/:nth-|react-aria|html5_/i.test(action.selector) };
+}
+
+async function handleStepCommand(command, index) {
+  if (!recorder || isReplaying) return;
+  const actions = recorder.getActions();
+  if (!actions[index]) return;
+  if (command === 'replay-step') {
+    statusText.textContent = `Running step #${index + 1}…`;
+    try {
+      highlightReplayingAction(index);
+      await runReplayActionWithTimeout(actions[index], Number(actions[index].metadata?.timeoutMs) || 8000, new AbortController().signal);
+      showToast(`Step #${index + 1} passed`, 'success');
+    } catch (error) {
+      showToast(`Step #${index + 1} failed: ${error.message}`, 'error');
+    } finally {
+      clearReplayHighlight();
+    }
+    return;
+  } else if (command === 'up' && index > 0) {
+    recorder.moveAction(index, index - 1);
+    selectedStepIndex = index - 1;
+  } else if (command === 'down' && index < actions.length - 1) {
+    recorder.moveAction(index, index + 1);
+    selectedStepIndex = index + 1;
+  } else if (command === 'duplicate') {
+    recorder.duplicateAction(index);
+    selectedStepIndex = index + 1;
+  } else if (command === 'breakpoint') {
+    toggleActionBreakpoint(index);
+    return;
+  } else if (command === 'disable') {
+    recorder.setActionDisabled(index, actions[index].metadata?.disabled !== true);
+  } else if (command === 'delete') {
+    recorder.deleteAction(index);
+    selectedStepIndex = null;
+    closeStepEditor();
+  }
+  updateActionsDisplay();
+}
+
+function addAssertionStep() {
+  if (!recorder || isReplaying) return;
+  const actions = recorder.getActions();
+  actions.push({
+    type: 'assert',
+    selector: 'body',
+    timestamp: Date.now(),
+    metadata: { kind: 'visible' },
+  });
+  recorder.setActions(actions);
+  selectedStepIndex = actions.length - 1;
+  updateActionsDisplay();
+}
+
+function openStepEditor(index) {
+  selectedStepIndex = index;
+  updateActionsDisplay();
+}
+
+function closeStepEditor() {
+  selectedStepIndex = null;
+  const card = document.getElementById('step-properties-card');
+  if (card) card.style.display = 'none';
+  document.querySelectorAll('.action-item.selected').forEach((item) => item.classList.remove('selected'));
+}
+
+function renderStepEditor(index) {
+  const card = document.getElementById('step-properties-card');
+  const content = document.getElementById('step-properties-content');
+  const title = document.getElementById('step-properties-title');
+  const action = recorder?.getActions()[index];
+  if (!card || !content || !action) return;
+  card.style.display = 'block';
+  title.textContent = `Step #${index + 1} Properties`;
+  const metadata = action.metadata || {};
+  const actionTypes = [
+    'click', 'doubleclick', 'rightclick', 'input', 'select', 'checkbox', 'radio',
+    'upload', 'hover', 'focus', 'submit', 'drag', 'scroll', 'keypress',
+    'navigate', 'wait', 'waitForPageLoad', 'assert', 'visual', 'api',
+    'mockNetwork', 'accessibility', 'performance',
+    'plugin',
+  ];
+  const assertionKinds = [
+    ['visible', 'Element is visible'],
+    ['text-contains', 'Text contains'],
+    ['value-equals', 'Value equals'],
+    ['attribute-equals', 'Attribute equals'],
+    ['count-equals', 'Element count equals'],
+    ['url-equals', 'URL equals'],
+    ['url-contains', 'URL contains'],
+    ['title-equals', 'Page title equals'],
+    ['response-status', 'Response status'],
+  ];
+  const fallbackLocators = buildFingerprintLocators(action);
+  const healingResult = [...replayReport.failed, ...replayReport.passed].find((item) => item.index === index)?.healing;
+  content.innerHTML = `
+    <form id="step-properties-form">
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Action</label>
+          <select id="step-edit-type" class="form-select">${actionTypes.map((type) =>
+            `<option value="${type}" ${type === action.type ? 'selected' : ''}>${type}</option>`
+          ).join('')}</select>
+        </div>
+        <div class="form-group"><label class="form-label">Step timeout (ms)</label>
+          <input id="step-edit-timeout" class="form-input" type="number" min="1" value="${escapeReportText(metadata.timeoutMs || '')}">
+        </div>
+      </div>
+      <div class="form-group"><label class="form-label">Selector / target</label>
+        <input id="step-edit-selector" class="form-input" list="step-locator-options" value="${escapeReportText(action.selector)}">
+        <datalist id="step-locator-options">${fallbackLocators.map((locator) => `<option value="${escapeReportText(locator)}"></option>`).join('')}</datalist>
+        <small class="panel-description">Choose the primary locator or enter a custom one. Fingerprint fallbacks remain available to healing.</small>
+      </div>
+      <div class="form-group"><label class="form-label">Value</label>
+        <input id="step-edit-value" class="form-input" value="${escapeReportText(action.value || '')}">
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label class="form-label">Retries</label>
+          <input id="step-edit-retries" class="form-input" type="number" min="0" value="${escapeReportText(metadata.maxRetries ?? '')}">
+        </div>
+        <div class="form-group step-checks">
+          <label><input id="step-edit-disabled" type="checkbox" ${metadata.disabled ? 'checked' : ''}> Disabled</label>
+          <label><input id="step-edit-breakpoint" type="checkbox" ${metadata.breakpoint ? 'checked' : ''}> Breakpoint</label>
+        </div>
+      </div>
+      <div id="assertion-editor-fields" class="${action.type === 'assert' ? '' : 'hidden'}">
+        <div class="form-group"><label class="form-label">Assertion</label>
+          <select id="step-edit-assertion-kind" class="form-select">${assertionKinds.map(([kind, label]) =>
+            `<option value="${kind}" ${metadata.kind === kind ? 'selected' : ''}>${label}</option>`
+          ).join('')}</select>
+        </div>
+        <div class="form-group"><label class="form-label">Expected value</label>
+          <input id="step-edit-expected" class="form-input" value="${escapeReportText(metadata.expected || '')}">
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">Attribute name</label>
+            <input id="step-edit-attribute" class="form-input" value="${escapeReportText(metadata.attributeName || '')}">
+          </div>
+          <div class="form-group"><label class="form-label">Response URL contains</label>
+            <input id="step-edit-response-url" class="form-input" value="${escapeReportText(metadata.responseUrl || '')}">
+          </div>
+        </div>
+      </div>
+      <div id="advanced-step-fields" class="${['visual', 'api', 'mockNetwork', 'accessibility', 'performance', 'plugin'].includes(action.type) ? '' : 'hidden'}">
+        <div class="form-group"><label class="form-label">Advanced step configuration (JSON)</label>
+          <textarea id="step-edit-advanced-json" class="form-input" rows="7">${escapeReportText(JSON.stringify(metadata, null, 2))}</textarea>
+          <small class="panel-description">Visual: name, mode, threshold. API: method, url, expectedStatus. Mock: urlPattern, status, body. Performance: Web Vitals budget fields.</small>
+        </div>
+      </div>
+      ${healingResult ? `<details class="healing-comparison" open><summary>Healing comparison <span>Review</span></summary>
+        <label>Original locator<code>${escapeReportText(healingResult.originalSelector || action.selector)}</code></label>
+        <label>Recovered locator<code>${escapeReportText(healingResult.healedSelector || healingResult.selector)}</code></label>
+        <div class="healing-confidence">${Math.round(Number(healingResult.confidence || 0) * 100)}% confidence</div>
+        <button type="button" class="secondary-btn full-width" id="accept-healed-locator">Use recovered locator</button>
+      </details>` : ''}
+      <div id="step-editor-error" class="step-editor-error"></div>
+      <button type="submit" class="primary-btn full-width">Save Step</button>
+    </form>`;
+  document.getElementById('step-edit-type')?.addEventListener('change', (event) => {
+    document.getElementById('assertion-editor-fields')?.classList.toggle('hidden', event.target.value !== 'assert');
+    document.getElementById('advanced-step-fields')?.classList.toggle('hidden',
+      !['visual', 'api', 'mockNetwork', 'accessibility', 'performance', 'plugin'].includes(event.target.value));
+  });
+  document.getElementById('step-properties-form')?.addEventListener('submit', (event) => {
+    event.preventDefault();
+    saveStepEditor(index);
+  });
+  document.getElementById('accept-healed-locator')?.addEventListener('click', () => {
+    const selector = healingResult?.healedSelector || healingResult?.selector;
+    if (!selector) return;
+    recorder.persistHealedLocator(index, selector);
+    document.getElementById('step-edit-selector').value = selector;
+    showToast('Recovered locator promoted to primary', 'success');
+    updateActionsDisplay();
+  });
+}
+
+function buildFingerprintLocators(action) {
+  const attributes = action?.locatorFingerprint?.attributes || {};
+  const tag = action?.locatorFingerprint?.tagName || '*';
+  return [...new Set([
+    action.selector,
+    attributes['data-testid'] ? `[data-testid="${attributes['data-testid']}"]` : '',
+    attributes['data-test'] ? `[data-test="${attributes['data-test']}"]` : '',
+    attributes.id ? `#${attributes.id}` : '',
+    attributes.name ? `${tag}[name="${attributes.name}"]` : '',
+    attributes['aria-label'] ? `${tag}[aria-label="${attributes['aria-label']}"]` : '',
+  ].filter(Boolean))];
+}
+
+function saveStepEditor(index) {
+  const action = recorder?.getActions()[index];
+  if (!action) return;
+  const type = document.getElementById('step-edit-type').value;
+  const metadata = { ...(action.metadata || {}) };
+  const timeout = document.getElementById('step-edit-timeout').value;
+  const retries = document.getElementById('step-edit-retries').value;
+  if (timeout) metadata.timeoutMs = Number(timeout); else delete metadata.timeoutMs;
+  if (retries) metadata.maxRetries = Number(retries); else delete metadata.maxRetries;
+  metadata.disabled = document.getElementById('step-edit-disabled').checked;
+  metadata.breakpoint = document.getElementById('step-edit-breakpoint').checked;
+  if (type === 'assert') {
+    metadata.kind = document.getElementById('step-edit-assertion-kind').value;
+    metadata.expected = document.getElementById('step-edit-expected').value;
+    metadata.attributeName = document.getElementById('step-edit-attribute').value;
+    metadata.responseUrl = document.getElementById('step-edit-response-url').value;
+  } else {
+    delete metadata.kind;
+    delete metadata.expected;
+    delete metadata.attributeName;
+    delete metadata.responseUrl;
+  }
+  if (['visual', 'api', 'mockNetwork', 'accessibility', 'performance', 'plugin'].includes(type)) {
+    try {
+      Object.assign(metadata, JSON.parse(document.getElementById('step-edit-advanced-json')?.value || '{}'));
+    } catch {
+      document.getElementById('step-editor-error').textContent = 'Advanced configuration must be valid JSON';
+      return;
+    }
+  }
+  try {
+    recorder.updateAction(index, {
+      ...action,
+      type,
+      selector: document.getElementById('step-edit-selector').value,
+      value: document.getElementById('step-edit-value').value || undefined,
+      metadata,
+      timestamp: Date.now(),
+    });
+    statusText.textContent = `Step #${index + 1} updated`;
+    updateActionsDisplay();
+  } catch (error) {
+    document.getElementById('step-editor-error').textContent = error.message;
+  }
 }
 
 async function exportScript(format) {
@@ -1598,42 +2154,55 @@ async function exportScript(format) {
 
 // Replay recorded actions
 let isReplaying = false;
+let replayAbortController = null;
+let currentReplayEngine = null;
+let replayStatePoll = null;
+let webviewReplayControl = createWebviewReplayControl();
 let replayReport = { passed: [], failed: [], total: 0 };
 let replayStartedAt = 0;
 let replayEndedAt = 0;
 let lastReplayExecutionReport = null;
+let lastReplayExecution = null;
+let latestReportViewModel = null;
 
 function updateReplayButton() {
   const replayBtn = document.getElementById('replay-record-btn');
   if (!replayBtn || !recorder) return;
   
   const actions = recorder.getActions();
-  replayBtn.disabled = actions.length === 0 || isReplaying || isRecording;
+  replayBtn.disabled = actions.length === 0 || isRecording;
 }
 
 async function replayActions(speed = 1.0, engine = 'webview', policy = { timeoutMs: 8000, retries: 1, continueOnFailure: true }) {
   if (!recorder || isReplaying || isRecording) return;
   
   const actions = recorder.getActions();
+  let replayTerminalState = 'passed';
   if (actions.length === 0) {
     statusText.textContent = 'No actions to replay';
     return;
   }
   
   isReplaying = true;
+  currentReplayEngine = engine;
+  webviewReplayControl = createWebviewReplayControl();
+  replayAbortController = new AbortController();
+  const replaySignal = replayAbortController.signal;
   replayReport = { passed: [], failed: [], total: actions.length };
   replayStartedAt = Date.now();
   lastReplayExecutionReport = null;
+  lastReplayExecution = null;
+  startReplayStateMonitor();
+  updateExecutionControls({ state: 'starting', currentStep: -1, totalSteps: actions.length });
   
   const replayBtn = document.getElementById('replay-record-btn');
   if (replayBtn) {
-    replayBtn.disabled = true;
+    replayBtn.disabled = false;
     replayBtn.innerHTML = `
       <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-        <rect x="6" y="6" width="4" height="12"></rect>
-        <rect x="14" y="6" width="4" height="12"></rect>
+        <rect x="6" y="6" width="12" height="12"></rect>
       </svg>
-      Replaying...
+      Stop Replay
     `;
   }
   
@@ -1644,14 +2213,26 @@ async function replayActions(speed = 1.0, engine = 'webview', policy = { timeout
   try {
     if (engine === 'playwright') {
       await replayActionsWithExecutor(actions, policy);
+      throwIfReplayCancelled(replaySignal);
       replayEndedAt = Date.now();
+      replayTerminalState = replayReport.failed.length > 0 ? 'failed' : 'passed';
+      await persistRunHistory();
       statusText.textContent = `Execution completed: ${replayReport.passed.length} passed, ${replayReport.failed.length} failed`;
       showReplayReport();
       return;
     }
 
     for (let i = 0; i < actions.length; i++) {
+      throwIfReplayCancelled(replaySignal);
       const action = actions[i];
+      await waitForWebviewReplayPermission(i, action, replaySignal);
+      if (action.metadata?.disabled === true) {
+        if (webviewReplayControl.pauseAfterStep) {
+          webviewReplayControl.pauseAfterStep = false;
+          webviewReplayControl.pauseRequested = true;
+        }
+        continue;
+      }
       
       // Highlight current action being replayed
       highlightReplayingAction(i);
@@ -1661,7 +2242,7 @@ async function replayActions(speed = 1.0, engine = 'webview', policy = { timeout
         const stepStartedAt = Date.now();
 
         try {
-          const replayOutcome = await runReplayActionWithTimeout(action, policy.timeoutMs);
+          const replayOutcome = await runReplayActionWithTimeout(action, policy.timeoutMs, replaySignal);
           const screenshot = await captureWebviewScreenshotBase64();
           stepResult = {
             index: i,
@@ -1674,8 +2255,11 @@ async function replayActions(speed = 1.0, engine = 'webview', policy = { timeout
           replayReport.passed.push(stepResult);
           break;
         } catch (error) {
+          if (replaySignal.aborted) {
+            throw error;
+          }
           if (attempt < policy.retries) {
-            await new Promise((resolve) => setTimeout(resolve, 250));
+            await replayDelay(250, replaySignal);
             continue;
           }
 
@@ -1698,19 +2282,45 @@ async function replayActions(speed = 1.0, engine = 'webview', policy = { timeout
       
       // Wait between actions (adjusted by speed)
       const delay = 500 / speed; // Base delay of 500ms
-      await new Promise(resolve => setTimeout(resolve, delay));
+      await replayDelay(delay, replaySignal);
+      if (webviewReplayControl.pauseAfterStep) {
+        webviewReplayControl.pauseAfterStep = false;
+        webviewReplayControl.pauseRequested = true;
+      }
     }
     
     statusText.textContent = `Replay completed: ${replayReport.passed.length} passed, ${replayReport.failed.length} failed`;
+    replayTerminalState = replayReport.failed.length > 0 ? 'failed' : 'passed';
     replayEndedAt = Date.now();
+    reporter.recordReport(buildWebviewExecutionReport());
+    await persistRunHistory();
     
     // Show report
     showReplayReport();
   } catch (error) {
-    console.error('Replay error:', error);
-    statusText.textContent = 'Replay failed: ' + error.message;
+    if (replaySignal.aborted) {
+      replayTerminalState = 'cancelled';
+      statusText.textContent = 'Replay stopped';
+    } else {
+      replayTerminalState = 'failed';
+      console.error('Replay error:', error);
+      statusText.textContent = 'Replay failed: ' + error.message;
+    }
   } finally {
     isReplaying = false;
+    currentReplayEngine = null;
+    stopReplayStateMonitor();
+    updateExecutionControls({
+      state: replayTerminalState,
+      currentStep: webviewReplayControl.currentStep,
+      totalSteps: actions.length,
+    });
+    setTimeout(() => {
+      if (!isReplaying) {
+        updateExecutionControls({ state: 'idle', currentStep: -1, totalSteps: 0 });
+      }
+    }, 1500);
+    replayAbortController = null;
     if (replayBtn) {
       replayBtn.disabled = false;
       replayBtn.innerHTML = `
@@ -1733,6 +2343,10 @@ async function replayActionsWithExecutor(actions, policy) {
     headless: false,
     continueOnFailure: policy.continueOnFailure,
     defaultStepTimeoutMs: policy.timeoutMs,
+    globalTimeoutMs: Math.max(
+      30_000,
+      actions.length * (policy.timeoutMs * (policy.retries + 1) + 1000)
+    ),
     retryPolicy: {
       maxRetries: policy.retries,
       retryDelayMs: 250,
@@ -1770,15 +2384,289 @@ async function replayActionsWithExecutor(actions, policy) {
   };
 
   lastReplayExecutionReport = report;
+  lastReplayExecution = execution;
+
+  if (execution.runError && /cancel|timed out/i.test(execution.runError)) {
+    throw new Error(execution.runError);
+  }
 }
 
-async function runReplayActionWithTimeout(action, timeoutMs) {
-  return await Promise.race([
-    replayAction(action),
-    new Promise((_, reject) => {
-      setTimeout(() => reject(new Error(`Replay step timeout after ${timeoutMs}ms`)), timeoutMs);
-    }),
-  ]);
+function buildWebviewExecutionReport() {
+  const results = [...replayReport.passed, ...replayReport.failed].sort((left, right) => left.index - right.index);
+  return {
+    runId: `webview_${replayStartedAt || Date.now()}`,
+    testName: getSuggestedRecordingName(recorder?.getActions?.() || []),
+    startTime: replayStartedAt || Date.now(),
+    endTime: replayEndedAt || Date.now(),
+    duration: Math.max(0, (replayEndedAt || Date.now()) - (replayStartedAt || Date.now())),
+    status: replayReport.failed.length ? 'failed' : 'passed',
+    steps: results.map((item) => ({
+      index: item.index,
+      name: `${item.index + 1}. ${item.action.type} ${item.action.selector || ''}`,
+      actionType: item.action.type,
+      selector: item.action.selector,
+      status: item.error ? 'failed' : 'passed',
+      duration: item.duration || 0,
+      error: item.error || undefined,
+      screenshot: item.screenshot || undefined,
+      healing: item.healing || undefined,
+      healedLocators: item.healing ? [`${item.healing.originalSelector} -> ${item.healing.healedSelector}`] : undefined,
+    })),
+    screenshots: results.map((item) => item.screenshot).filter(Boolean),
+    healingEvents: results.filter((item) => item.healing).length,
+    healingDetails: results.map((item) => item.healing).filter(Boolean),
+    environment: { runtime: 'electron-webview', headless: false },
+  };
+}
+
+async function persistRunHistory() {
+  try {
+    const serialized = reporter?.exportHistory?.();
+    if (serialized) await ipcRenderer.invoke('save-run-history', serialized);
+  } catch (error) {
+    console.warn('Could not persist run history:', error);
+  }
+}
+
+async function hydrateRunHistory() {
+  if (runHistoryHydrated) return;
+  try {
+    const result = await ipcRenderer.invoke('load-run-history');
+    if (result?.success && result.history && result.history !== '[]') reporter?.importHistory?.(result.history);
+    runHistoryHydrated = true;
+  } catch (error) {
+    console.warn('Could not restore run history:', error);
+  }
+}
+
+function cancelReplay() {
+  if (!isReplaying) return false;
+  updateExecutionControls({
+    state: 'stopping',
+    currentStep: webviewReplayControl.currentStep,
+    totalSteps: recorder?.getActions().length || 0,
+  });
+  replayAbortController?.abort(new Error('Replay cancelled by user'));
+  releaseWebviewReplayWaiters();
+  if (chromationBrowser && typeof chromationBrowser.cancelExecution === 'function') {
+    chromationBrowser.cancelExecution('Replay cancelled by user');
+  }
+  statusText.textContent = 'Stopping replay...';
+  return true;
+}
+
+function createWebviewReplayControl() {
+  return {
+    pauseRequested: false,
+    pauseAfterStep: false,
+    paused: false,
+    currentStep: -1,
+    consumedBreakpoints: new Set(),
+    waiters: [],
+  };
+}
+
+function toggleActionBreakpoint(index) {
+  if (!recorder || isReplaying) return;
+  const actions = recorder.getActions();
+  const action = actions[index];
+  if (!action) return;
+  action.metadata = {
+    ...(action.metadata || {}),
+    breakpoint: action.metadata?.breakpoint !== true,
+  };
+  recorder.setActions(actions);
+  updateActionsDisplay();
+}
+
+function pauseReplay() {
+  if (!isReplaying) return false;
+  if (currentReplayEngine === 'playwright') {
+    const accepted = chromationBrowser?.pauseExecution?.() === true;
+    if (accepted) statusText.textContent = 'Pause requested...';
+    return accepted;
+  }
+  webviewReplayControl.pauseRequested = true;
+  statusText.textContent = 'Pause requested...';
+  return true;
+}
+
+function resumeReplay() {
+  if (!isReplaying) return false;
+  if (currentReplayEngine === 'playwright') {
+    return chromationBrowser?.resumeExecution?.() === true;
+  }
+  if (!webviewReplayControl.paused) return false;
+  webviewReplayControl.pauseRequested = false;
+  webviewReplayControl.pauseAfterStep = false;
+  webviewReplayControl.paused = false;
+  releaseWebviewReplayWaiters();
+  updateExecutionControls({
+    state: 'running',
+    currentStep: webviewReplayControl.currentStep,
+    totalSteps: recorder.getActions().length,
+  });
+  return true;
+}
+
+function stepReplay() {
+  if (!isReplaying) return false;
+  if (currentReplayEngine === 'playwright') {
+    return chromationBrowser?.stepExecution?.() === true;
+  }
+  if (!webviewReplayControl.paused) return false;
+  webviewReplayControl.pauseRequested = false;
+  webviewReplayControl.pauseAfterStep = true;
+  webviewReplayControl.paused = false;
+  releaseWebviewReplayWaiters();
+  return true;
+}
+
+async function waitForWebviewReplayPermission(index, action, signal) {
+  webviewReplayControl.currentStep = index;
+  const breakpoint = action.metadata?.breakpoint === true &&
+    !webviewReplayControl.consumedBreakpoints.has(index);
+  if (breakpoint) {
+    webviewReplayControl.consumedBreakpoints.add(index);
+    webviewReplayControl.pauseRequested = true;
+  }
+  if (!webviewReplayControl.pauseRequested) {
+    updateExecutionControls({
+      state: 'running',
+      currentStep: index,
+      totalSteps: recorder.getActions().length,
+    });
+    return;
+  }
+  webviewReplayControl.paused = true;
+  updateExecutionControls({
+    state: 'paused',
+    currentStep: index,
+    totalSteps: recorder.getActions().length,
+  });
+  statusText.textContent = breakpoint
+    ? `Paused at breakpoint #${index + 1}`
+    : `Paused before step #${index + 1}`;
+  await new Promise((resolve, reject) => {
+    const abort = () => reject(
+      signal.reason instanceof Error ? signal.reason : new Error('Replay cancelled')
+    );
+    signal.addEventListener('abort', abort, { once: true });
+    webviewReplayControl.waiters.push(() => {
+      signal.removeEventListener('abort', abort);
+      resolve();
+    });
+  });
+  throwIfReplayCancelled(signal);
+}
+
+function releaseWebviewReplayWaiters() {
+  webviewReplayControl.waiters.splice(0).forEach((resolve) => resolve());
+}
+
+function startReplayStateMonitor() {
+  stopReplayStateMonitor();
+  if (currentReplayEngine !== 'playwright') return;
+  replayStatePoll = setInterval(() => {
+    const snapshot = chromationBrowser?.getExecutionState?.();
+    if (snapshot) updateExecutionControls(snapshot);
+  }, 100);
+}
+
+function stopReplayStateMonitor() {
+  if (replayStatePoll) clearInterval(replayStatePoll);
+  replayStatePoll = null;
+}
+
+function updateExecutionControls(snapshot) {
+  const state = snapshot?.state || 'idle';
+  const paused = state === 'paused';
+  const running = ['starting', 'running'].includes(state);
+  const pauseButton = document.getElementById('pause-replay-btn');
+  const resumeButton = document.getElementById('resume-replay-btn');
+  const stepButton = document.getElementById('step-replay-btn');
+  const label = document.getElementById('execution-state-label');
+  if (pauseButton) pauseButton.disabled = !running;
+  if (resumeButton) resumeButton.disabled = !paused;
+  if (stepButton) stepButton.disabled = !paused;
+  if (label) {
+    const progress = snapshot?.currentStep >= 0
+      ? ` · Step ${snapshot.currentStep + 1}/${snapshot.totalSteps}`
+      : '';
+    label.textContent = `${state.charAt(0).toUpperCase()}${state.slice(1)}${progress}`;
+    label.dataset.state = state;
+  }
+  const bar = document.getElementById('execution-bar');
+  const active = ['starting', 'running', 'paused'].includes(state);
+  bar?.classList.toggle('hidden', state === 'idle');
+  bar?.classList.toggle('paused', paused);
+  bar?.classList.toggle('terminal', !active && state !== 'idle');
+  const currentStep = Number(snapshot?.currentStep ?? -1);
+  const totalSteps = Number(snapshot?.totalSteps || 0);
+  const progress = totalSteps ? Math.max(0, Math.min(100, ((currentStep + 1) / totalSteps) * 100)) : 0;
+  const action = recorder?.getActions?.()[currentStep];
+  setText('execution-bar-title', state === 'paused' ? 'Execution paused' : state === 'failed' ? 'Execution failed' : state === 'passed' ? 'Execution completed' : 'Running test');
+  setText('execution-bar-step', currentStep >= 0 ? `Step ${currentStep + 1} of ${totalSteps} · ${action?.type || 'action'} ${action?.selector || ''}` : 'Preparing execution…');
+  const progressBar = document.getElementById('execution-bar-progress');
+  if (progressBar) progressBar.style.width = `${progress}%`;
+  setText('execution-bar-failures', `${replayReport.failed.length} failure${replayReport.failed.length === 1 ? '' : 's'}`);
+  document.getElementById('execution-pause')?.classList.toggle('hidden', !running);
+  document.getElementById('execution-resume')?.classList.toggle('hidden', !paused);
+  document.getElementById('execution-step')?.toggleAttribute('disabled', !paused);
+  if (active && !executionElapsedTimer) {
+    executionElapsedTimer = setInterval(updateExecutionElapsed, 500);
+  } else if (!active && executionElapsedTimer) {
+    clearInterval(executionElapsedTimer);
+    executionElapsedTimer = null;
+  }
+  updateExecutionElapsed();
+}
+
+function updateExecutionElapsed() {
+  const elapsed = Math.max(0, Date.now() - (replayStartedAt || Date.now()));
+  const seconds = Math.floor(elapsed / 1000);
+  setText('execution-bar-elapsed', `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`);
+}
+
+function throwIfReplayCancelled(signal) {
+  if (signal?.aborted) {
+    throw signal.reason instanceof Error ? signal.reason : new Error('Replay cancelled');
+  }
+}
+
+async function replayDelay(ms, signal) {
+  throwIfReplayCancelled(signal);
+  return await new Promise((resolve, reject) => {
+    const finish = () => {
+      signal.removeEventListener('abort', abort);
+      resolve();
+    };
+    const timer = setTimeout(finish, ms);
+    const abort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', abort);
+      reject(signal.reason instanceof Error ? signal.reason : new Error('Replay cancelled'));
+    };
+    signal.addEventListener('abort', abort, { once: true });
+  });
+}
+
+async function runReplayActionWithTimeout(action, timeoutMs, signal) {
+  throwIfReplayCancelled(signal);
+  return await new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`Replay step timeout after ${timeoutMs}ms`)),
+      timeoutMs
+    );
+    const abort = () => reject(
+      signal.reason instanceof Error ? signal.reason : new Error('Replay cancelled')
+    );
+    signal.addEventListener('abort', abort, { once: true });
+    replayAction(action).then(resolve, reject).finally(() => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', abort);
+    });
+  });
 }
 
 async function captureWebviewScreenshotBase64() {
@@ -2262,7 +3150,12 @@ function showScraperPanel() {
   const scraperSelector = document.getElementById('scraper-selector');
   
   startScrapeBtn.addEventListener('click', async () => {
-    await startScraping(scraperSelector.value);
+    await startScraping(scraperSelector.value, {
+      fields: document.getElementById('scraper-fields')?.value || '',
+      nextSelector: document.getElementById('scraper-next-selector')?.value || '',
+      maxPages: Number(document.getElementById('scraper-max-pages')?.value || 1),
+      infiniteScroll: document.getElementById('scraper-infinite-scroll')?.checked,
+    });
   });
   
   exportCsvBtn.addEventListener('click', () => {
@@ -2272,21 +3165,32 @@ function showScraperPanel() {
   exportJsonBtn.addEventListener('click', () => {
     exportScrapedData('json');
   });
+  exportExcelBtn?.addEventListener('click', () => exportScrapedData('excel'));
+  cancelScrapeBtn?.addEventListener('click', () => scraperStudio.cancel());
 }
 
-async function startScraping(selector) {
+async function startScraping(selector, options = {}) {
   if (!scraperStudio || !selector) return;
   
   statusText.textContent = 'Scraping data...';
   
-  // In real implementation, this would scrape from the webview
-  const data = await scraperStudio.scrapeTable({
-    selector: selector,
-    fields: [],
-    pagination: false
-  });
+  const mappings = String(options.fields || '').split(/\r?\n/).map((line) => {
+    const [name, fieldSelector] = line.split('=');
+    return { name: name?.trim(), selector: fieldSelector?.trim() };
+  }).filter((field) => field.name);
+  const records = await browserWebview.executeJavaScript(`(() => {
+    const rows = Array.from(document.querySelectorAll('${escapeSelector(selector)}'));
+    const mappings = ${JSON.stringify(mappings)};
+    return rows.map((row) => {
+      if (!mappings.length) return { text: (row.textContent || '').trim() };
+      return Object.fromEntries(mappings.map((field) => [
+        field.name, ((field.selector ? row.querySelector(field.selector) : row)?.textContent || '').trim()
+      ]));
+    });
+  })()`);
+  const data = await scraperStudio.ingestData(records, selector);
   
-  displayScrapedData(data);
+  displayScrapedData(data.records);
   statusText.textContent = 'Scraping complete';
 }
 
@@ -2320,7 +3224,8 @@ async function exportScrapedData(format) {
   
   const data = await scraperStudio.exportData(format);
   
-  const blob = new Blob([data], { type: format === 'csv' ? 'text/csv' : 'application/json' });
+  const mime = format === 'csv' ? 'text/csv' : format === 'excel' ? 'application/vnd.ms-excel' : 'application/json';
+  const blob = new Blob([data], { type: mime });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -2384,6 +3289,205 @@ ipcRenderer.on('toggle-healing', (enabled) => {
   }
 });
 
+// ===== PHASE 1 WORKSPACE & COMMANDS =====
+const homeWorkspace = document.getElementById('home-workspace');
+let commandSelection = 0;
+
+const phase1Commands = [
+  { label: 'Open workspace', hint: 'Project health and recent activity', shortcut: 'Ctrl+Shift+B', run: () => showHomeWorkspace() },
+  { label: 'Browse current page', hint: 'Return to browser', shortcut: '', run: () => showBrowseWorkspace() },
+  { label: 'Open Inspector', hint: 'Discover resilient locators', shortcut: 'Ctrl+Shift+I', run: () => toggleTool('inspector') },
+  { label: 'Open Recorder', hint: 'Capture a browser flow', shortcut: 'Ctrl+Shift+R', run: () => toggleTool('recorder') },
+  { label: 'Replay current recording', hint: 'Run captured actions', shortcut: 'Ctrl+Enter', run: () => replayActions() },
+  { label: 'Open Scraper', hint: 'Extract structured page data', shortcut: 'Ctrl+Shift+S', run: () => toggleTool('scraper') },
+  { label: 'Open Reports', hint: 'Review execution history', shortcut: 'Ctrl+Shift+P', run: () => showRunHistoryPanel() },
+  { label: 'Saved Recordings', hint: 'Open and replay saved flows', shortcut: '', run: () => showSavedRecordings() },
+  { label: 'Browsing History', hint: 'Search and manage visited pages', shortcut: 'Ctrl+H', run: () => showBrowsingHistory() },
+  { label: 'Help & Shortcuts', hint: 'Search in-product guidance and commands', shortcut: 'F1', run: () => showHelp() },
+  { label: 'System Diagnostics', hint: 'Versions, storage, permissions, and health', shortcut: '', run: () => showDiagnostics() },
+  { label: 'Replay Onboarding', hint: 'Record, replay, and report walkthrough', shortcut: '', run: () => openOnboarding(true) },
+  { label: 'Plugin Settings', hint: 'Manage automation extensions', shortcut: 'Ctrl+,', run: () => { showBrowseWorkspace(); sidePanel.classList.add('open'); showPluginsPanel(); } },
+  { label: 'Toggle Theme', hint: 'Light, dark, or system', shortcut: '', run: () => toggleTheme() }
+];
+
+function showBrowseWorkspace() {
+  homeWorkspace?.classList.add('hidden');
+  hideReportWorkspace();
+  setActiveRailAction('browse');
+  const tab = tabs?.find?.((item) => item.id === activeTabId);
+  if (tab) tab.uiState = { ...(tab.uiState || {}), workspace: 'browse' };
+}
+
+async function showHomeWorkspace() {
+  reportWorkspace?.classList.add('hidden');
+  browserView?.classList.add('hidden');
+  homeWorkspace?.classList.remove('hidden');
+  sidePanel.classList.remove('open');
+  setActiveRailAction('browse');
+  const tab = tabs?.find?.((item) => item.id === activeTabId);
+  if (tab) tab.uiState = { ...(tab.uiState || {}), workspace: 'home', panelOpen: false };
+  await refreshHomeWorkspace();
+}
+
+async function refreshHomeWorkspace() {
+  await hydrateRunHistory();
+  let recordings = [];
+  let reports = [];
+  let analytics = {};
+  try {
+    const loaded = await ipcRenderer.invoke('load-recordings');
+    recordings = Array.isArray(loaded) ? loaded : (loaded?.recordings || []);
+  } catch (_) {}
+  try {
+    reports = reporter?.searchHistory ? await reporter.searchHistory({}) : [];
+    analytics = reporter?.getRunAnalytics ? await reporter.getRunAnalytics() : {};
+  } catch (_) {}
+  reports = Array.isArray(reports) ? reports : [];
+  const failed = Number(analytics.failedRuns ?? reports.filter((run) => run.status === 'failed' || Number(run.failed) > 0).length);
+  const healed = Number(analytics.healed ?? analytics.healedLocators ?? reports.reduce((sum, run) => sum + Number(run.healed || 0), 0));
+  const passed = Number(analytics.passedRuns ?? reports.filter((run) => run.status === 'passed').length);
+  const completed = Number(analytics.completedRuns ?? (passed + failed));
+  const rate = completed ? Math.round((passed / completed) * 100) : 0;
+  setText('home-health-score', `${rate}%`);
+  setText('home-run-count', reports.length);
+  setText('home-failure-count', failed);
+  setText('home-healed-count', healed);
+  setText('rail-failure-count', failed);
+  setText('rail-healing-count', healed);
+  renderHomeRecordings(recordings.slice(0, 5));
+  renderRecentList('home-recent-runs', reports.slice(0, 6), (item) => ({
+    title: item.title || item.name || item.runId || 'Test run',
+    meta: item.duration ? `${item.duration} ms` : (item.startedAt || item.createdAt || ''),
+    status: item.status || (Number(item.failed) > 0 ? 'failed' : 'passed')
+  }));
+  updatePhase1Badges();
+}
+
+function renderHomeRecordings(recordings) {
+  const target = document.getElementById('home-recent-recordings');
+  if (!target) return;
+  if (!recordings.length) {
+    target.innerHTML = '<div class="home-empty"><span>●</span><strong>No recordings yet</strong><p>Start recording a browser flow and it will be ready to reuse here.</p><button data-empty-record>Start recording</button></div>';
+    target.querySelector('[data-empty-record]')?.addEventListener('click', () => { showBrowseWorkspace(); toggleTool('recorder'); });
+    return;
+  }
+  target.innerHTML = recordings.map((recording) => {
+    const name = recording.name || recording.title || getSuggestedRecordingName(recording.actions);
+    const count = recording.actionCount ?? recording.actions?.length ?? 0;
+    const date = new Date(recording.createdAt || recording.timestamp || Date.now()).toLocaleDateString();
+    const filename = escapeReportText(recording.filename);
+    return `<article class="recording-row" data-filename="${filename}">
+      <button class="recording-main home-load-recording" data-filename="${filename}" title="Open ${escapeReportText(name)}">
+        <span class="recording-avatar">${escapeReportText(getRecordingInitials(name))}</span>
+        <span><strong>${escapeReportText(name)}</strong><small>${count} actions · Updated ${date}</small></span>
+      </button>
+      <div class="recording-row-actions">
+        <button class="home-replay-recording" data-filename="${filename}" title="Replay recording" aria-label="Replay ${escapeReportText(name)}">▶</button>
+        <button class="home-rename-recording" data-filename="${filename}" data-name="${escapeReportText(name)}" title="Rename recording" aria-label="Rename ${escapeReportText(name)}">✎</button>
+        <button class="home-delete-recording" data-filename="${filename}" title="Delete recording" aria-label="Delete ${escapeReportText(name)}">⋯</button>
+      </div>
+    </article>`;
+  }).join('');
+  target.querySelectorAll('.home-load-recording').forEach((button) => button.addEventListener('click', () => loadRecording(button.dataset.filename)));
+  target.querySelectorAll('.home-replay-recording').forEach((button) => button.addEventListener('click', () => loadAndReplayRecording(button.dataset.filename)));
+  target.querySelectorAll('.home-rename-recording').forEach((button) => button.addEventListener('click', async () => {
+    const name = await requestRecordingName(button.dataset.name, 'Rename recording');
+    if (!name || name === button.dataset.name) return;
+    const result = await ipcRenderer.invoke('rename-recording', { filename: button.dataset.filename, name });
+    if (result.success) { showToast(`Renamed to "${name}"`, 'success'); await refreshHomeWorkspace(); }
+    else showToast(result.error || 'Could not rename recording', 'error');
+  }));
+  target.querySelectorAll('.home-delete-recording').forEach((button) => button.addEventListener('click', async () => {
+    if (!await requestConfirmation('This recording and its saved steps will be permanently removed.', 'Delete recording?', 'Delete')) return;
+    await deleteRecording(button.dataset.filename);
+    await refreshHomeWorkspace();
+  }));
+}
+
+function getRecordingInitials(name) {
+  return String(name || 'Test').split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join('').toUpperCase();
+}
+
+function renderRecentList(id, items, mapper) {
+  const target = document.getElementById(id);
+  if (!target) return;
+  if (!items.length) {
+    target.innerHTML = '<p class="empty-state">Nothing here yet. Your next run will appear here.</p>';
+    return;
+  }
+  target.innerHTML = items.map((raw) => {
+    const item = mapper(raw);
+    const statusClass = String(item.status).toLowerCase();
+    return `<div class="recent-item"><strong>${escapeReportText(item.title)}</strong><span class="recent-status ${statusClass}">${escapeReportText(item.status)}</span><small>${escapeReportText(item.meta)}</small></div>`;
+  }).join('');
+}
+
+function setText(id, value) {
+  const target = document.getElementById(id);
+  if (target) target.textContent = String(value);
+}
+
+function updatePhase1Badges() {
+  const actionCount = recorder?.getActions ? recorder.getActions().length : (recordedActions?.length || 0);
+  setText('rail-action-count', actionCount);
+  document.getElementById('rail-recording-badge')?.classList.toggle('hidden', !isRecording);
+}
+
+function openCommandPalette() {
+  const palette = document.getElementById('command-palette');
+  const input = document.getElementById('command-input');
+  palette?.classList.remove('hidden');
+  if (input) { input.value = ''; input.focus(); }
+  renderCommandResults('');
+}
+
+function closeCommandPalette() {
+  document.getElementById('command-palette')?.classList.add('hidden');
+}
+
+function getFilteredCommands(query) {
+  const words = String(query || '').toLowerCase().split(/\s+/).filter(Boolean);
+  return phase1Commands.filter((command) => words.every((word) => `${command.label} ${command.hint}`.toLowerCase().includes(word)));
+}
+
+function renderCommandResults(query) {
+  const results = document.getElementById('command-results');
+  if (!results) return;
+  const commands = getFilteredCommands(query);
+  commandSelection = Math.min(commandSelection, Math.max(0, commands.length - 1));
+  results.innerHTML = commands.length ? commands.map((command, index) =>
+    `<button class="command-item ${index === commandSelection ? 'active' : ''}" data-command-index="${phase1Commands.indexOf(command)}" role="option"><span><strong>${escapeReportText(command.label)}</strong><small>${escapeReportText(command.hint)}</small></span><kbd>${escapeReportText(command.shortcut)}</kbd></button>`
+  ).join('') : '<p class="empty-state">No matching commands.</p>';
+  results.querySelectorAll('.command-item').forEach((button) => button.addEventListener('click', () => runCommand(Number(button.dataset.commandIndex))));
+}
+
+function runCommand(index) {
+  closeCommandPalette();
+  phase1Commands[index]?.run();
+}
+
+function captureActiveTabUIState() {
+  const tab = tabs.find((item) => item.id === activeTabId);
+  if (!tab) return;
+  tab.uiState = {
+    ...(tab.uiState || {}),
+    activeTool: sidePanel.dataset.currentTool || null,
+    panelOpen: sidePanel.classList.contains('open'),
+    panelScrollTop: panelContent.scrollTop
+  };
+}
+
+function restoreTabUIState(tab) {
+  sidePanel.classList.remove('open');
+  if (!tab?.uiState?.panelOpen || !tab.uiState.activeTool) {
+    setActiveRailAction('browse');
+    return;
+  }
+  toggleTool(tab.uiState.activeTool);
+  sidePanel.classList.add('open');
+  requestAnimationFrame(() => { panelContent.scrollTop = tab.uiState.panelScrollTop || 0; });
+}
+
 // ===== TAB MANAGEMENT =====
 let tabs = [];
 let activeTabId = 1;
@@ -2394,6 +3498,7 @@ tabs.push({
   id: 1,
   title: 'New Tab',
   url: 'https://duckduckgo.com',
+  uiState: { workspace: 'browse', activeTool: null, panelOpen: false, panelScrollTop: 0 },
   favicon: '🦆'
 });
 
@@ -2404,6 +3509,7 @@ function createNewTab() {
     id: tabId,
     title: 'New Tab',
     url: 'https://duckduckgo.com',
+    uiState: { workspace: 'browse', activeTool: null, panelOpen: false, panelScrollTop: 0 },
     favicon: '🦆'
   };
   
@@ -2421,7 +3527,8 @@ function closeTab(tabId) {
   // If closing active tab, switch to another tab
   if (tabId === activeTabId) {
     const newActiveTab = tabs[Math.max(0, tabIndex - 1)];
-    activeTabId = newActiveTab.id;
+    switchToTab(newActiveTab.id);
+    return;
   }
   
   renderTabs();
@@ -2429,18 +3536,33 @@ function closeTab(tabId) {
 }
 
 function switchToTab(tabId) {
+  captureActiveTabUIState();
   activeTabId = tabId;
   const tab = tabs.find(t => t.id === tabId);
   
   if (tab) {
     renderTabs();
-    navigateToUrl(tab.url);
+    if (tab.type === 'report') {
+      homeWorkspace?.classList.add('hidden');
+      showReportWorkspace();
+      urlInput.value = tab.url;
+    } else {
+      hideReportWorkspace();
+      if (tab.uiState?.workspace === 'home') {
+        showHomeWorkspace();
+      } else {
+        homeWorkspace?.classList.add('hidden');
+        browserView?.classList.remove('hidden');
+        navigateToUrl(tab.url);
+        restoreTabUIState(tab);
+      }
+    }
   }
 }
 
 function updateActiveTabInfo(title, url, favicon) {
   const tab = tabs.find(t => t.id === activeTabId);
-  if (tab) {
+  if (tab && tab.type !== 'report') {
     if (title) tab.title = title;
     if (url) tab.url = url;
     if (favicon) tab.favicon = favicon;
@@ -2501,6 +3623,70 @@ function initTheme() {
   // Load saved theme preference
   const savedTheme = localStorage.getItem('chromation-theme') || 'system';
   applyTheme(savedTheme);
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => {
+    if (currentTheme === 'system') applyTheme('system');
+  });
+}
+
+function applyVisualPreferences() {
+  const density = localStorage.getItem('chromation-density') || 'comfortable';
+  const reduceMotion = localStorage.getItem('chromation-reduce-motion') === 'true';
+  const lowPerformance = localStorage.getItem('chromation-low-performance') === 'true';
+  document.documentElement.dataset.density = density;
+  document.documentElement.classList.toggle('reduce-motion', reduceMotion);
+  document.documentElement.classList.toggle('low-performance', lowPerformance);
+}
+
+function bindVisualPreferenceControls() {
+  const density = document.getElementById('ui-density-select');
+  const reduceMotion = document.getElementById('ui-reduce-motion');
+  const lowPerformance = document.getElementById('ui-low-performance');
+  if (density) density.value = localStorage.getItem('chromation-density') || 'comfortable';
+  if (reduceMotion) reduceMotion.checked = localStorage.getItem('chromation-reduce-motion') === 'true';
+  if (lowPerformance) lowPerformance.checked = localStorage.getItem('chromation-low-performance') === 'true';
+  density?.addEventListener('change', () => { localStorage.setItem('chromation-density', density.value); applyVisualPreferences(); });
+  reduceMotion?.addEventListener('change', () => { localStorage.setItem('chromation-reduce-motion', String(reduceMotion.checked)); applyVisualPreferences(); });
+  lowPerformance?.addEventListener('change', () => { localStorage.setItem('chromation-low-performance', String(lowPerformance.checked)); applyVisualPreferences(); });
+}
+
+const onboardingSteps = [
+  { icon: '●', title: 'Record a real browser flow', copy: 'Open the site you want to test, choose Record, and interact normally. Chromation captures actions and resilient locator fingerprints.' },
+  { icon: '▶', title: 'Replay with control', copy: 'Review and edit the timeline, choose the replay engine, then run. Pause, step, retry, and automatic locator healing stay visible throughout execution.' },
+  { icon: '▤', title: 'Act on the report', copy: 'Every run produces an actionable report with failures, evidence, healing events, timing, exports, and persistent history.' },
+];
+let onboardingIndex = 0;
+
+function openOnboarding(force = false) {
+  if (!force && localStorage.getItem('chromation-onboarding-complete') === 'true') return;
+  onboardingIndex = 0;
+  document.getElementById('onboarding-dialog')?.classList.remove('hidden');
+  renderOnboardingStep();
+}
+
+function renderOnboardingStep() {
+  const step = onboardingSteps[onboardingIndex];
+  setText('onboarding-eyebrow', `STEP ${onboardingIndex + 1} OF ${onboardingSteps.length}`);
+  setText('onboarding-title', step.title);
+  setText('onboarding-copy', step.copy);
+  setText('onboarding-visual', step.icon);
+  const dots = document.getElementById('onboarding-dots');
+  if (dots) dots.innerHTML = onboardingSteps.map((_, index) => `<span class="${index === onboardingIndex ? 'active' : ''}"></span>`).join('');
+  document.getElementById('onboarding-back')?.classList.toggle('hidden', onboardingIndex === 0);
+  setText('onboarding-next', onboardingIndex === onboardingSteps.length - 1 ? 'Start testing' : 'Next');
+}
+
+function completeOnboarding() {
+  localStorage.setItem('chromation-onboarding-complete', 'true');
+  document.getElementById('onboarding-dialog')?.classList.add('hidden');
+}
+
+function bindOnboarding() {
+  document.getElementById('onboarding-next')?.addEventListener('click', () => {
+    if (onboardingIndex === onboardingSteps.length - 1) { completeOnboarding(); showHomeWorkspace(); return; }
+    onboardingIndex++; renderOnboardingStep();
+  });
+  document.getElementById('onboarding-back')?.addEventListener('click', () => { onboardingIndex = Math.max(0, onboardingIndex - 1); renderOnboardingStep(); });
+  document.getElementById('onboarding-skip')?.addEventListener('click', completeOnboarding);
 }
 
 function applyTheme(theme) {
@@ -2563,7 +3749,194 @@ function showSavedRecordings() {
   }
 }
 
-function showBrowsingHistory() {
+async function showPluginsPanel() {
+  panelTitle.textContent = 'Plugins';
+  const template = document.getElementById('plugins-panel-template');
+  panelContent.innerHTML = template.innerHTML;
+  bindVisualPreferenceControls();
+  const refresh = async () => {
+    const plugins = await pluginManager.list();
+    const list = document.getElementById('installed-plugin-list');
+    const count = document.getElementById('plugin-count');
+    if (count) count.textContent = String(plugins.length);
+    if (!list) return;
+    list.innerHTML = plugins.length ? plugins.map((plugin) => `
+      <article class="plugin-card">
+        <div><strong>${escapeReportText(plugin.manifest.name)}</strong><span>${escapeReportText(plugin.manifest.id)} · v${escapeReportText(plugin.manifest.version)}</span></div>
+        <span class="step-status ${plugin.enabled ? 'passed' : 'skipped'}">${plugin.enabled ? 'Enabled' : 'Disabled'}</span>
+        <p>${escapeReportText(plugin.manifest.description || 'No description')}</p>
+        <p><b>Permissions:</b> ${plugin.manifest.permissions.map(escapeReportText).join(', ') || 'None'}</p>
+        ${plugin.lastError ? `<div class="screenshot-capture-error">${escapeReportText(plugin.lastError)}</div>` : ''}
+        <div class="button-group">
+          <button class="secondary-btn" data-plugin-toggle="${escapeReportText(plugin.manifest.id)}" data-plugin-enabled="${plugin.enabled}">${plugin.enabled ? 'Disable' : 'Enable'}</button>
+          <button class="secondary-btn" data-plugin-remove="${escapeReportText(plugin.manifest.id)}">Uninstall</button>
+        </div>
+      </article>`).join('') : '<p class="hint">No plugins installed.</p>';
+    list.querySelectorAll('[data-plugin-toggle]').forEach((button) => button.addEventListener('click', async () => {
+      try {
+        if (button.dataset.pluginEnabled === 'true') await pluginManager.disable(button.dataset.pluginToggle);
+        else await pluginManager.enable(button.dataset.pluginToggle);
+        await refresh();
+      } catch (error) { showToast(error.message, 'error'); }
+    }));
+    list.querySelectorAll('[data-plugin-remove]').forEach((button) => button.addEventListener('click', async () => {
+      await pluginManager.uninstall(button.dataset.pluginRemove);
+      await refresh();
+    }));
+  };
+  document.getElementById('install-plugin-btn')?.addEventListener('click', async () => {
+    const errorTarget = document.getElementById('plugin-install-error');
+    try {
+      const manifest = JSON.parse(document.getElementById('plugin-manifest-json')?.value || '{}');
+      const source = document.getElementById('plugin-source-code')?.value || '';
+      const approved = document.getElementById('approve-plugin-permissions')?.checked
+        ? manifest.permissions || [] : [];
+      await pluginManager.install({ manifest, source }, approved);
+      if (errorTarget) errorTarget.textContent = '';
+      await refresh();
+      showToast('Plugin installed. Enable it when ready.', 'success');
+    } catch (error) {
+      if (errorTarget) errorTarget.textContent = error.message;
+    }
+  });
+  refresh();
+}
+
+async function showLegacyRunHistoryPanel() {
+  showBrowseWorkspace();
+  if (!reporter?.searchHistory) return showToast('Run history is not available', 'error');
+  panelTitle.textContent = 'Run History';
+  const reports = await reporter.searchHistory({});
+  const analytics = await reporter.getRunAnalytics();
+  panelContent.innerHTML = `<div class="tool-panel">
+    <div class="panel-section"><input id="run-history-search" class="form-input" placeholder="Search runs, steps, selectors, or errors"></div>
+    <div class="panel-card"><div class="card-header"><h5>Analytics</h5><span class="badge">${analytics.runs} runs</span></div>
+      <div class="card-content"><p>${Math.round(analytics.passRate * 100)}% pass rate · ${Math.round(analytics.averageDuration)}ms average · ${analytics.healingFrequency.toFixed(1)} heals/run</p>
+      <p>${analytics.flakySteps.length} flaky steps detected</p></div></div>
+    <div id="run-history-results">${renderRunHistoryItems(reports)}</div></div>`;
+  sidePanel.dataset.currentTool = 'reports';
+  sidePanel.classList.add('open');
+  setActiveRailAction('reports');
+  document.getElementById('run-history-search')?.addEventListener('input', async (event) => {
+    const matches = await reporter.searchHistory({ text: event.target.value });
+    document.getElementById('run-history-results').innerHTML = renderRunHistoryItems(matches);
+  });
+}
+
+function renderRunHistoryItems(reports) {
+  if (!reports.length) return '<div class="empty-state"><p>No execution reports yet</p></div>';
+  return reports.map((report) => `<article class="panel-card"><div class="card-header"><h5>${escapeReportText(report.testName)}</h5><span class="step-status ${report.status}">${report.status}</span></div>
+    <div class="card-content"><p>${new Date(report.startTime).toLocaleString()} · ${report.duration}ms · ${report.healingEvents} heals</p>
+    <p>${report.steps.filter((step) => step.status === 'failed').length} failed · ${report.steps.filter((step) => step.status === 'cancelled').length} cancelled</p></div></article>`).join('');
+}
+
+async function showRunHistoryPanel() {
+  showBrowseWorkspace();
+  if (!reporter?.searchHistory) return showToast('Run history is not available', 'error');
+  panelTitle.textContent = 'Reports';
+  panelContent.innerHTML = '<div class="loading-state">Loading execution history…</div>';
+  sidePanel.dataset.currentTool = 'reports';
+  sidePanel.classList.add('open');
+  setActiveRailAction('reports');
+  try {
+    await hydrateRunHistory();
+    const reports = await reporter.searchHistory({});
+    const analytics = await reporter.getRunAnalytics();
+    panelContent.innerHTML = `<div class="tool-panel">
+      <div class="report-center-header"><div><p class="eyebrow">EXECUTION INTELLIGENCE</p><h3>Run history</h3><p>Open a run to inspect failures, evidence, and healing activity.</p></div><button class="secondary-btn" id="refresh-run-history">Refresh</button></div>
+      <div class="report-center-metrics"><article title="All runs, including cancelled runs"><span>Total runs</span><strong>${analytics.runs}</strong><small>${analytics.completedRuns} completed</small></article><article title="Passed runs divided by passed plus failed runs. Cancelled runs are excluded."><span>Run pass rate</span><strong>${formatPassRate(analytics.passRate)}</strong><small>${analytics.passedRuns} passed · ${analytics.failedRuns} failed</small></article><article title="Passed steps divided by passed plus failed steps"><span>Step pass rate</span><strong>${formatPassRate(analytics.stepPassRate)}</strong><small>Across completed steps</small></article><article><span>Avg. duration</span><strong>${formatRunDuration(analytics.averageDuration)}</strong><small>Per run</small></article><article><span>Heals / run</span><strong>${analytics.healingFrequency.toFixed(1)}</strong><small>Locator recoveries</small></article></div>
+      <div class="panel-section report-search-row"><input id="run-history-search" class="form-input" placeholder="Search runs, steps, selectors, or errors"><select id="run-history-status" class="form-select"><option value="">All statuses</option><option value="passed">Passed</option><option value="failed">Failed</option><option value="cancelled">Cancelled</option></select></div>
+      <div id="run-history-results">${renderReportsCenterItems(reports)}</div></div>`;
+    bindRunHistoryInteractions();
+  } catch (error) {
+    panelContent.innerHTML = `<div class="report-load-error"><strong>Reports could not be loaded</strong><p>${escapeReportText(error.message)}</p><button class="secondary-btn" id="retry-run-history">Try again</button></div>`;
+    document.getElementById('retry-run-history')?.addEventListener('click', showRunHistoryPanel);
+  }
+}
+
+function formatRunDuration(value) {
+  const duration = Number(value || 0);
+  return duration >= 1000 ? `${(duration / 1000).toFixed(duration >= 10000 ? 0 : 1)}s` : `${Math.round(duration)}ms`;
+}
+
+function formatPassRate(value) {
+  const percentage = Math.max(0, Math.min(100, Number(value || 0) * 100));
+  return `${percentage.toFixed(percentage % 1 === 0 ? 0 : 1)}%`;
+}
+
+function renderReportsCenterItems(reports) {
+  window.__chromationVisibleReports = reports;
+  if (!reports.length) return '<div class="report-history-empty"><strong>No execution reports yet</strong><p>Replay a recording and its complete report will appear here automatically.</p><button class="primary-btn" data-open-tool="recorder">Open Recorder</button></div>';
+  return reports.map((report, index) => {
+    const failed = report.steps.filter((step) => step.status === 'failed').length;
+    const passed = report.steps.filter((step) => step.status === 'passed').length;
+    return `<button class="run-history-item" data-run-history-index="${index}"><span class="run-status-dot ${report.status}"></span><span class="run-summary"><strong>${escapeReportText(report.testName)}</strong><small>${new Date(report.startTime).toLocaleString()} · ${report.steps.length} steps · ${formatRunDuration(report.duration)}</small></span><span class="run-results"><b>${passed} passed</b><em>${failed} failed</em><small>${report.healingEvents || 0} healed</small></span><span class="run-chevron">›</span></button>`;
+  }).join('');
+}
+
+function bindRunHistoryInteractions() {
+  const refresh = async () => {
+    const text = document.getElementById('run-history-search')?.value || '';
+    const status = document.getElementById('run-history-status')?.value || undefined;
+    const matches = await reporter.searchHistory({ text, status });
+    const target = document.getElementById('run-history-results');
+    if (target) target.innerHTML = renderReportsCenterItems(matches);
+    bindRunHistoryItemClicks();
+  };
+  document.getElementById('run-history-search')?.addEventListener('input', refresh);
+  document.getElementById('run-history-status')?.addEventListener('change', refresh);
+  document.getElementById('refresh-run-history')?.addEventListener('click', showRunHistoryPanel);
+  bindRunHistoryItemClicks();
+}
+
+function bindRunHistoryItemClicks() {
+  document.querySelectorAll('[data-run-history-index]').forEach((button) => button.addEventListener('click', () => {
+    const report = window.__chromationVisibleReports?.[Number(button.dataset.runHistoryIndex)];
+    if (report) openHistoricalReport(report);
+  }));
+}
+
+function openHistoricalReport(report) {
+  const steps = report.steps.map((step, index) => ({
+    index: step.index ?? index,
+    action: { type: step.actionType || step.name, selector: step.selector || '' },
+    status: step.status,
+    durationMs: step.duration || 0,
+    retries: step.retries || 0,
+    error: step.error || null,
+    healing: step.healing || null,
+    evidence: step.screenshot ? { screenshotBase64: step.screenshot } : undefined,
+  }));
+  const passed = steps.filter((step) => step.status === 'passed').length;
+  const failed = steps.filter((step) => step.status === 'failed').length;
+  latestReportViewModel = {
+    runId: report.runId || `${report.testName}_${report.startTime}`,
+    status: report.status,
+    startedAt: report.startTime,
+    endedAt: report.endTime,
+    durationMs: report.duration,
+    total: steps.length,
+    passed,
+    failed,
+    skipped: steps.filter((step) => ['skipped', 'cancelled'].includes(step.status)).length,
+    healed: report.healingEvents || 0,
+    passRate: steps.length ? Math.round((passed / steps.length) * 1000) / 10 : 0,
+    steps,
+    consoleLogs: report.consoleLogs || [],
+    networkSummary: report.networkLogs || [],
+    runError: null,
+  };
+  lastReplayExecutionReport = report;
+  const existing = tabs.find((tab) => tab.type === 'report' && tab.runId === latestReportViewModel.runId);
+  const reportTab = existing || { id: nextTabId++, type: 'report', runId: latestReportViewModel.runId, title: `Report · ${report.status}`, url: `chromation://report/${encodeURIComponent(latestReportViewModel.runId)}`, favicon: failed ? '×' : '✓' };
+  if (!existing) tabs.push(reportTab);
+  activeTabId = reportTab.id;
+  renderTabs();
+  showReportWorkspace();
+  urlInput.value = reportTab.url;
+}
+
+function showLegacyBrowsingHistory() {
   statusText.textContent = 'Browsing history feature coming soon';
   
   // Create history panel
@@ -2581,7 +3954,78 @@ function showBrowsingHistory() {
   sidePanel.classList.add('open');
 }
 
-function showHelp() {
+async function showBrowsingHistory() {
+  showBrowseWorkspace();
+  panelTitle.textContent = 'Browsing History';
+  panelContent.innerHTML = '<div class="loading-state">Loading browsing history…</div>';
+  sidePanel.dataset.currentTool = 'history';
+  sidePanel.classList.add('open');
+  try {
+    const result = await ipcRenderer.invoke('load-browsing-history');
+    if (!result.success) throw new Error(result.error || 'History could not be loaded');
+    renderBrowsingHistoryPanel(result.entries || []);
+  } catch (error) {
+    panelContent.innerHTML = `<div class="report-load-error"><strong>History could not be loaded</strong><p>${escapeReportText(error.message)}</p><button id="retry-browsing-history" class="secondary-btn">Try again</button></div>`;
+    document.getElementById('retry-browsing-history')?.addEventListener('click', showBrowsingHistory);
+  }
+}
+
+function renderBrowsingHistoryPanel(entries, query = '') {
+  const normalized = query.toLowerCase().trim();
+  const filtered = entries.filter((entry) => !normalized || `${entry.title} ${entry.url}`.toLowerCase().includes(normalized));
+  window.__chromationBrowsingHistory = entries;
+  panelContent.innerHTML = `<div class="tool-panel browsing-history-panel">
+    <div class="history-heading"><div><p class="eyebrow">PRIVATE TO THIS DEVICE</p><h3>Browsing history</h3><p>${entries.length} saved visit${entries.length === 1 ? '' : 's'}</p></div>${entries.length ? '<button id="clear-browsing-history" class="secondary-btn danger-text">Clear all</button>' : ''}</div>
+    <div class="history-search"><input id="browsing-history-search" class="form-input" type="search" value="${escapeReportText(query)}" placeholder="Search page titles or URLs"></div>
+    <div id="browsing-history-results">${renderBrowsingHistoryGroups(filtered, entries)}</div>
+  </div>`;
+  document.getElementById('browsing-history-search')?.addEventListener('input', (event) => renderBrowsingHistoryPanel(entries, event.target.value));
+  document.getElementById('clear-browsing-history')?.addEventListener('click', async () => {
+    if (!await requestConfirmation('All saved browsing visits will be removed from this device.', 'Clear browsing history?', 'Clear history')) return;
+    const result = await ipcRenderer.invoke('clear-browsing-history');
+    if (result.success) { showToast('Browsing history cleared', 'success'); renderBrowsingHistoryPanel([]); }
+    else showToast(result.error || 'History could not be cleared', 'error');
+  });
+  bindBrowsingHistoryItems(entries);
+  requestAnimationFrame(() => {
+    const search = document.getElementById('browsing-history-search');
+    if (search && query) { search.focus(); search.setSelectionRange(query.length, query.length); }
+  });
+}
+
+function renderBrowsingHistoryGroups(filtered, allEntries) {
+  if (!allEntries.length) return '<div class="history-empty"><span>◷</span><strong>No browsing history yet</strong><p>Pages you visit in Chromation will appear here.</p></div>';
+  if (!filtered.length) return '<div class="history-empty"><strong>No matching visits</strong><p>Try a different page title, domain, or URL.</p></div>';
+  const groups = new Map();
+  filtered.forEach((entry) => {
+    const date = new Date(entry.timestamp);
+    const today = new Date();
+    const yesterday = new Date(); yesterday.setDate(today.getDate() - 1);
+    const day = date.toDateString() === today.toDateString() ? 'Today' : date.toDateString() === yesterday.toDateString() ? 'Yesterday' : date.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+    if (!groups.has(day)) groups.set(day, []);
+    groups.get(day).push(entry);
+  });
+  return [...groups.entries()].map(([day, visits]) => `<section class="history-day"><h4>${day}</h4>${visits.map((entry) => {
+    const index = allEntries.findIndex((item) => item.id === entry.id);
+    let host = entry.url;
+    try { host = new URL(entry.url).hostname.replace(/^www\./, ''); } catch (_) {}
+    return `<article class="history-entry"><button class="history-open" data-history-index="${index}"><span class="history-favicon">${escapeReportText(host.charAt(0).toUpperCase())}</span><span><strong>${escapeReportText(entry.title || host)}</strong><small>${escapeReportText(host)} · ${new Date(entry.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</small></span></button><button class="history-delete" data-history-id="${escapeReportText(entry.id)}" title="Remove from history" aria-label="Remove ${escapeReportText(entry.title)} from history">×</button></article>`;
+  }).join('')}</section>`).join('');
+}
+
+function bindBrowsingHistoryItems(entries) {
+  document.querySelectorAll('[data-history-index]').forEach((button) => button.addEventListener('click', () => {
+    const entry = entries[Number(button.dataset.historyIndex)];
+    if (entry) { showBrowseWorkspace(); closePanel(); navigateToUrl(entry.url); }
+  }));
+  document.querySelectorAll('[data-history-id]').forEach((button) => button.addEventListener('click', async () => {
+    const result = await ipcRenderer.invoke('delete-browsing-history-entry', button.dataset.historyId);
+    if (!result.success) return showToast(result.error || 'Visit could not be removed', 'error');
+    renderBrowsingHistoryPanel(entries.filter((entry) => entry.id !== button.dataset.historyId));
+  }));
+}
+
+function showLegacyHelp() {
   statusText.textContent = 'Opening help documentation';
   
   // Create help panel
@@ -2631,6 +4075,68 @@ function showHelp() {
     </div>
   `;
   sidePanel.classList.add('open');
+}
+
+const inAppHelpTopics = [
+  { title: 'Record a test', category: 'Workflow', keywords: 'capture actions fingerprint save', body: 'Open a website, select Record, then Start Recording. Stop, review the timeline, and save with a descriptive name.' },
+  { title: 'Choose a replay engine', category: 'Replay', keywords: 'webview playwright difference frames ci evidence', body: 'Use In-Browser Replay for fast interactive debugging. Use Playwright for CI, frames, advanced steps, richer evidence, accessibility, API, visual, and performance tests.' },
+  { title: 'Fix a failed locator', category: 'Healing', keywords: 'selector not found timeout heal confidence', body: 'Open the failed step, inspect its fingerprint fallbacks, review the healing comparison, and promote the recovered locator when it identifies the intended element.' },
+  { title: 'Understand reports', category: 'Reports', keywords: 'failure screenshot export pass rate history', body: 'Reports separate run and step pass rates and include failure evidence, healing events, timing, console and network context, and export formats.' },
+  { title: 'Keyboard shortcuts', category: 'Reference', keywords: 'keys commands ctrl', body: 'Ctrl+K Commands · Ctrl+Shift+R Recorder · Ctrl+Shift+I Inspector · Ctrl+Shift+S Scraper · Ctrl+Shift+P Reports · Ctrl+H History · Ctrl+Enter Replay · Escape Close.' },
+  { title: 'File uploads', category: 'Actions', keywords: 'upload file chooser device', body: 'Recorded uploads store file metadata. At replay time Chromation validates that the local file still exists before assigning it to the file input.' },
+  { title: 'Variables and environments', category: 'Authoring', keywords: 'test data binding secret base url', body: 'Use {{variableName}} in values, URLs, selectors, and assertions. Store secrets in the encrypted environment vault and non-secret values in environment profiles.' },
+];
+
+function showHelp() {
+  showBrowseWorkspace();
+  panelTitle.textContent = 'Help & Guidance';
+  panelContent.innerHTML = `<div class="tool-panel help-center">
+    <div class="help-hero"><p class="eyebrow">CHROMATION GUIDE</p><h3>How can we help?</h3><p>Search workflows, capabilities, and shortcuts.</p><input id="help-search" class="form-input" type="search" placeholder="Search help…"></div>
+    <div class="help-quick-actions"><button id="restart-onboarding">Replay onboarding</button><button id="open-diagnostics">Open diagnostics</button><button data-open-tool="recorder">Open Recorder</button></div>
+    <div id="help-results">${renderHelpTopics(inAppHelpTopics)}</div>
+  </div>`;
+  sidePanel.dataset.currentTool = 'help';
+  sidePanel.classList.add('open');
+  document.getElementById('help-search')?.addEventListener('input', (event) => {
+    const query = event.target.value.toLowerCase().trim();
+    const matches = inAppHelpTopics.filter((topic) => `${topic.title} ${topic.category} ${topic.keywords} ${topic.body}`.toLowerCase().includes(query));
+    document.getElementById('help-results').innerHTML = renderHelpTopics(matches);
+  });
+  document.getElementById('restart-onboarding')?.addEventListener('click', () => openOnboarding(true));
+  document.getElementById('open-diagnostics')?.addEventListener('click', showDiagnostics);
+}
+
+function renderHelpTopics(topics) {
+  if (!topics.length) return '<div class="workflow-empty"><strong>No matching guidance</strong><span>Try a feature name, error, or shortcut.</span></div>';
+  return topics.map((topic) => `<details class="help-topic"><summary><span>${escapeReportText(topic.category)}</span><strong>${escapeReportText(topic.title)}</strong><b>+</b></summary><p>${escapeReportText(topic.body)}</p></details>`).join('');
+}
+
+async function showDiagnostics() {
+  panelTitle.textContent = 'Diagnostics';
+  panelContent.innerHTML = '<div class="loading-state">Running health checks…</div>';
+  sidePanel.classList.add('open');
+  try {
+    const diagnostics = await ipcRenderer.invoke('get-app-diagnostics');
+    const healthyStores = diagnostics.stores.filter((store) => store.healthy).length;
+    panelContent.innerHTML = `<div class="tool-panel diagnostics-panel">
+      <div class="diagnostic-health ${healthyStores === diagnostics.stores.length ? 'healthy' : 'warning'}"><strong>${healthyStores === diagnostics.stores.length ? 'System healthy' : 'Attention required'}</strong><span>${healthyStores}/${diagnostics.stores.length} storage checks passed · Encryption ${diagnostics.safeStorageAvailable ? 'available' : 'unavailable'}</span></div>
+      <div class="panel-card"><div class="card-header"><h5>Runtime versions</h5></div><div class="diagnostic-table">${Object.entries(diagnostics.versions).map(([name, value]) => `<div><span>${escapeReportText(name)}</span><code>${escapeReportText(value)}</code></div>`).join('')}<div><span>platform</span><code>${escapeReportText(diagnostics.platform.os)} · ${escapeReportText(diagnostics.platform.architecture)}</code></div></div></div>
+      <div class="panel-card"><div class="card-header"><h5>Storage</h5></div><div class="diagnostic-table">${diagnostics.stores.map((store) => `<div><span>${escapeReportText(store.name)}<small>${formatDiagnosticBytes(store.bytes)}</small></span><code title="${escapeReportText(store.path)}">${escapeReportText(store.path)}</code><b class="${store.healthy ? 'passed' : 'failed'}">${store.healthy ? 'OK' : 'Error'}</b></div>`).join('')}</div></div>
+      <div class="panel-card"><div class="card-header"><h5>Origin permissions</h5><span class="badge">${diagnostics.permissions.length}</span></div><div class="card-content">${diagnostics.permissions.length ? diagnostics.permissions.map((item) => `<div class="permission-row"><code>${escapeReportText(item.origin)}</code><span>${escapeReportText(typeof item.permission === 'string' ? item.permission : JSON.stringify(item.permission))}</span></div>`).join('') : '<p class="hint">No origin-specific permissions stored.</p>'}</div></div>
+      <button class="secondary-btn full-width" id="refresh-diagnostics">Run checks again</button>
+    </div>`;
+    document.getElementById('refresh-diagnostics')?.addEventListener('click', showDiagnostics);
+  } catch (error) {
+    panelContent.innerHTML = `<div class="report-load-error"><strong>Diagnostics failed</strong><p>${escapeReportText(error.message)}</p><button class="secondary-btn" id="retry-diagnostics">Try again</button></div>`;
+    document.getElementById('retry-diagnostics')?.addEventListener('click', showDiagnostics);
+  }
+}
+
+function formatDiagnosticBytes(bytes) {
+  const value = Number(bytes || 0);
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function checkForUpdates() {
@@ -2725,6 +4231,73 @@ function showAbout() {
 
 // ===== RECORDING SAVE/LOAD/IMPORT FUNCTIONS =====
 
+function getSuggestedRecordingName(actions = []) {
+  const navigation = [...actions].reverse().find((action) => action.type === 'navigate' && action.value);
+  const rawUrl = navigation?.value || browserWebview?.getURL?.() || urlInput?.value || '';
+  try {
+    const url = new URL(rawUrl);
+    const host = url.hostname.replace(/^www\./, '').split('.')[0];
+    const site = host ? host.charAt(0).toUpperCase() + host.slice(1) : 'Website';
+    const pathName = url.pathname.split('/').filter(Boolean).slice(0, 2).map((part) => part.replace(/[-_]+/g, ' ')).join(' – ');
+    return pathName ? `${site} – ${pathName}` : `${site} test flow`;
+  } catch (_) {
+    const tab = tabs?.find?.((item) => item.id === activeTabId);
+    return tab?.title && tab.title !== 'New Tab' ? `${tab.title} test flow` : 'New test flow';
+  }
+}
+
+function requestRecordingName(suggestedName, heading = 'Name this recording') {
+  const backdrop = document.getElementById('recording-name-dialog');
+  const form = document.getElementById('recording-name-form');
+  const input = document.getElementById('recording-name-input');
+  const title = document.getElementById('recording-name-title');
+  const context = document.getElementById('recording-name-context');
+  const cancel = document.getElementById('recording-name-cancel');
+  if (!backdrop || !form || !input) return Promise.resolve(suggestedName);
+  title.textContent = heading;
+  input.value = suggestedName;
+  context.textContent = `Suggested from ${urlInput?.value || 'the current website'}`;
+  backdrop.classList.remove('hidden');
+  requestAnimationFrame(() => { input.focus(); input.select(); });
+  return new Promise((resolve) => {
+    const finish = (value) => {
+      backdrop.classList.add('hidden');
+      form.removeEventListener('submit', submit);
+      cancel.removeEventListener('click', cancelDialog);
+      backdrop.removeEventListener('click', clickOutside);
+      resolve(value);
+    };
+    const submit = (event) => { event.preventDefault(); const value = input.value.trim(); if (value) finish(value); };
+    const cancelDialog = () => finish(null);
+    const clickOutside = (event) => { if (event.target === backdrop) finish(null); };
+    form.addEventListener('submit', submit);
+    cancel.addEventListener('click', cancelDialog);
+    backdrop.addEventListener('click', clickOutside);
+  });
+}
+
+function requestConfirmation(message, title = 'Confirm action', confirmLabel = 'Confirm') {
+  const sheet = document.getElementById('confirmation-sheet');
+  const accept = document.getElementById('confirmation-accept');
+  const cancel = document.getElementById('confirmation-cancel');
+  setText('confirmation-title', title);
+  setText('confirmation-message', message);
+  if (accept) accept.textContent = confirmLabel;
+  sheet?.classList.remove('hidden');
+  return new Promise((resolve) => {
+    const finish = (value) => {
+      sheet?.classList.add('hidden');
+      accept?.removeEventListener('click', approve);
+      cancel?.removeEventListener('click', reject);
+      resolve(value);
+    };
+    const approve = () => finish(true);
+    const reject = () => finish(false);
+    accept?.addEventListener('click', approve);
+    cancel?.addEventListener('click', reject);
+  });
+}
+
 async function saveRecording() {
   if (!recorder) return;
   
@@ -2734,16 +4307,10 @@ async function saveRecording() {
     return;
   }
   
-  // Prompt for name with fallback when prompt is unavailable.
-  const defaultName = `Recording_${new Date().toLocaleDateString().replace(/\//g, '-')}_${Date.now()}`;
-  let name = defaultName;
-  try {
-    const promptedName = prompt('Enter a name for this recording:', defaultName);
-    if (typeof promptedName === 'string' && promptedName.trim()) {
-      name = promptedName.trim();
-    }
-  } catch (error) {
-    console.warn('Prompt not available, using default recording name:', error);
+  const name = await requestRecordingName(getSuggestedRecordingName(actions));
+  if (!name) {
+    statusText.textContent = 'Save cancelled';
+    return;
   }
   
   try {
@@ -2755,12 +4322,12 @@ async function saveRecording() {
       showNotification('✅ Recording saved!', `${actions.length} actions saved to ${result.filename}`);
     } else {
       statusText.textContent = 'Failed to save recording';
-      alert('Failed to save recording: ' + result.error);
+      showToast('Failed to save recording: ' + result.error, 'error');
     }
   } catch (error) {
     console.error('Save error:', error);
     statusText.textContent = 'Failed to save recording';
-    alert('Failed to save recording: ' + error.message);
+    showToast('Failed to save recording: ' + error.message, 'error');
   }
 }
 
@@ -2784,16 +4351,17 @@ async function importRecording() {
       }
     } else {
       statusText.textContent = 'Failed to import recording';
-      alert('Failed to import recording: ' + result.error);
+      showToast('Failed to import recording: ' + result.error, 'error');
     }
   } catch (error) {
     console.error('Import error:', error);
     statusText.textContent = 'Failed to import recording';
-    alert('Failed to import recording: ' + error.message);
+    showToast('Failed to import recording: ' + error.message, 'error');
   }
 }
 
 async function showSavedRecordings() {
+  showBrowseWorkspace();
   try {
     const result = await ipcRenderer.invoke('load-recordings');
     
@@ -2879,7 +4447,7 @@ async function showSavedRecordings() {
     document.querySelectorAll('.delete-recording').forEach(btn => {
       btn.addEventListener('click', async (e) => {
         const filename = e.currentTarget.dataset.filename;
-        if (confirm('Are you sure you want to delete this recording?')) {
+        if (await requestConfirmation('This recording and its saved steps will be permanently removed.', 'Delete recording?', 'Delete')) {
           await deleteRecording(filename);
           showSavedRecordings(); // Refresh list
         }
@@ -2896,6 +4464,7 @@ async function showSavedRecordings() {
 }
 
 async function loadRecording(filename) {
+  showBrowseWorkspace();
   try {
     const result = await ipcRenderer.invoke('load-recording', filename);
     
@@ -2906,6 +4475,7 @@ async function loadRecording(filename) {
         recordedActions = actions;
         
         // Switch to recorder panel
+        sidePanel.classList.remove('open');
         toggleTool('recorder');
         updateActionsDisplay();
         
@@ -2935,15 +4505,15 @@ async function deleteRecording(filename) {
       statusText.textContent = 'Recording deleted';
       showNotification('🗑️ Deleted', 'Recording removed successfully');
     } else {
-      alert('Failed to delete recording: ' + result.error);
+      showToast('Failed to delete recording: ' + result.error, 'error');
     }
   } catch (error) {
     console.error('Delete error:', error);
-    alert('Failed to delete recording: ' + error.message);
+    showToast('Failed to delete recording: ' + error.message, 'error');
   }
 }
 
-function showReplayReport() {
+function showLegacyReplayReport() {
   const totalActions = replayReport.total;
   const passed = replayReport.passed.length;
   const failed = replayReport.failed.length;
@@ -2987,6 +4557,10 @@ function showReplayReport() {
             <div class="stat-label">Healed</div>
             <div class="stat-value" style="color: #b06000;">${healingItems.length}</div>
           </div>
+          <button class="action-breakpoint-btn${action.metadata?.breakpoint ? ' active' : ''}"
+            data-action-index="${index}"
+            title="${action.metadata?.breakpoint ? 'Remove breakpoint' : 'Pause before this action'}"
+            aria-label="${action.metadata?.breakpoint ? 'Remove breakpoint' : 'Add breakpoint'}">●</button>
         </div>
       </div>
     </div>
@@ -3057,6 +4631,79 @@ function showReplayReport() {
   `;
   
   sidePanel.classList.add('open');
+}
+
+function buildReplayReportViewModel() {
+  const fallbackSteps = [...replayReport.passed, ...replayReport.failed].map((item) => ({
+    index: item.index,
+    action: item.action,
+    status: item.error ? 'failed' : 'passed',
+    durationMs: item.duration || 0,
+    retries: item.retries || 0,
+    error: item.error || null,
+    healing: item.healing || null,
+    evidence: item.screenshot ? { screenshotBase64: item.screenshot } : undefined,
+  }));
+  const steps = (lastReplayExecution?.steps || fallbackSteps)
+    .slice()
+    .sort((left, right) => left.index - right.index);
+  const total = lastReplayExecution?.summary?.total ?? replayReport.total;
+  const passed = steps.filter((step) => step.status === 'passed').length;
+  const failed = steps.filter((step) => step.status === 'failed').length;
+  const skipped = lastReplayExecution?.summary?.skipped ?? Math.max(0, total - passed - failed);
+  const healed = steps.filter((step) => Boolean(step.healing)).length;
+  const durationMs = lastReplayExecution?.durationMs ??
+    Math.max(0, (replayEndedAt || Date.now()) - (replayStartedAt || Date.now()));
+  return {
+    runId: lastReplayExecution?.runId || `replay_${replayStartedAt || Date.now()}`,
+    status: lastReplayExecution?.finalState || (failed > 0 ? 'failed' : 'passed'),
+    startedAt: lastReplayExecution?.startedAt || replayStartedAt,
+    endedAt: lastReplayExecution?.endedAt || replayEndedAt,
+    durationMs,
+    total,
+    passed,
+    failed,
+    skipped,
+    healed,
+    passRate: total > 0 ? Math.round((passed / total) * 1000) / 10 : 0,
+    steps,
+    consoleLogs: lastReplayExecution?.consoleLogs || [],
+    networkSummary: lastReplayExecution?.networkSummary || [],
+    runError: lastReplayExecution?.runError || null,
+  };
+}
+
+function showReplayReport() {
+  latestReportViewModel = buildReplayReportViewModel();
+  const existing = tabs.find((tab) =>
+    tab.type === 'report' && tab.runId === latestReportViewModel.runId
+  );
+  const reportTab = existing || {
+    id: nextTabId++,
+    type: 'report',
+    runId: latestReportViewModel.runId,
+    title: `Report · ${latestReportViewModel.status}`,
+    url: `chromation://report/${encodeURIComponent(latestReportViewModel.runId)}`,
+    favicon: latestReportViewModel.failed > 0 ? '✕' : '✓',
+  };
+  if (!existing) tabs.push(reportTab);
+  activeTabId = reportTab.id;
+  renderTabs();
+  showReportWorkspace();
+  urlInput.value = reportTab.url;
+}
+
+function showReportWorkspace() {
+  if (!latestReportViewModel || !window.ChromationReportWorkspace) return;
+  browserView?.classList.add('hidden');
+  reportWorkspace?.classList.remove('hidden');
+  sidePanel.classList.remove('open');
+  window.ChromationReportWorkspace.render(reportWorkspaceContent, latestReportViewModel);
+}
+
+function hideReportWorkspace() {
+  reportWorkspace?.classList.add('hidden');
+  browserView?.classList.remove('hidden');
 }
 
 async function exportReplayReport(format) {
@@ -3184,11 +4831,26 @@ function showNotification(title, message) {
   }, 3000);
 }
 
+function recordBrowsingVisit() {
+  try {
+    const url = browserWebview?.getURL?.();
+    if (!/^https?:\/\//i.test(url || '')) return;
+    const title = browserWebview?.getTitle?.() || tabs.find((tab) => tab.id === activeTabId)?.title || url;
+    ipcRenderer.invoke('add-browsing-history', { url, title, timestamp: Date.now() }).catch((error) => {
+      console.warn('Could not record browsing visit:', error);
+    });
+  } catch (error) {
+    console.warn('Could not read current page for history:', error);
+  }
+}
+
 // Update tab info when page loads
 if (browserWebview) {
   browserWebview.addEventListener('page-title-updated', (e) => {
     updateActiveTabInfo(e.title, null, null);
+    recordBrowsingVisit();
   });
+  browserWebview.addEventListener('did-finish-load', recordBrowsingVisit);
   
   browserWebview.addEventListener('did-navigate', (e) => {
     updateActiveTabInfo(null, e.url, null);
@@ -3207,7 +4869,115 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // Initialize theme and Chromation modules
   initTheme();
+  applyVisualPreferences();
   initChromation();
+  bindOnboarding();
+  setTimeout(() => openOnboarding(), 700);
+  window.addEventListener('chromation-remediation', (event) => {
+    const { action, stepIndex, query } = event.detail || {};
+    if (action === 'inspect-target') { showBrowseWorkspace(); toggleTool('inspector'); return; }
+    if (action === 'open-help') {
+      showHelp();
+      const search = document.getElementById('help-search');
+      if (search) { search.value = query || ''; search.dispatchEvent(new Event('input')); search.focus(); }
+      return;
+    }
+    showBrowseWorkspace();
+    sidePanel.classList.remove('open');
+    toggleTool('recorder');
+    if (Number.isInteger(stepIndex) && recorder?.getActions?.()[stepIndex]) openStepEditor(stepIndex);
+  });
+  updatePhase1Badges();
+  document.getElementById('execution-pause')?.addEventListener('click', pauseReplay);
+  document.getElementById('execution-resume')?.addEventListener('click', resumeReplay);
+  document.getElementById('execution-step')?.addEventListener('click', stepReplay);
+  document.getElementById('execution-stop')?.addEventListener('click', cancelReplay);
+
+  const resizeHandle = document.getElementById('panel-resize-handle');
+  const savedPanelWidth = Number(localStorage.getItem('chromation-panel-width'));
+  if (savedPanelWidth) sidePanel.style.setProperty('--panel-width', `${savedPanelWidth}px`);
+  resizeHandle?.addEventListener('pointerdown', (event) => {
+    event.preventDefault();
+    resizeHandle.setPointerCapture(event.pointerId);
+    const resize = (moveEvent) => {
+      const width = Math.max(340, Math.min(760, window.innerWidth - moveEvent.clientX));
+      sidePanel.style.setProperty('--panel-width', `${width}px`);
+      localStorage.setItem('chromation-panel-width', String(width));
+    };
+    const stop = () => {
+      resizeHandle.removeEventListener('pointermove', resize);
+      resizeHandle.removeEventListener('pointerup', stop);
+    };
+    resizeHandle.addEventListener('pointermove', resize);
+    resizeHandle.addEventListener('pointerup', stop);
+  });
+
+  document.querySelectorAll('.rail-action').forEach((button) => {
+    button.addEventListener('click', () => {
+      if (button.dataset.tool) toggleTool(button.dataset.tool);
+      if (button.dataset.workspace === 'browse') showHomeWorkspace();
+      if (button.dataset.action === 'replay') { showBrowseWorkspace(); replayActions(); }
+      if (button.dataset.action === 'reports') showRunHistoryPanel();
+      if (button.dataset.action === 'settings') {
+        showBrowseWorkspace();
+        sidePanel.classList.add('open');
+        sidePanel.dataset.currentTool = 'settings';
+        setActiveRailAction('settings');
+        showPluginsPanel();
+      }
+    });
+  });
+  document.getElementById('home-start-recording')?.addEventListener('click', () => { showBrowseWorkspace(); toggleTool('recorder'); });
+  document.getElementById('home-all-recordings')?.addEventListener('click', () => { showBrowseWorkspace(); showSavedRecordings(); });
+  document.getElementById('home-all-runs')?.addEventListener('click', showRunHistoryPanel);
+  document.querySelectorAll('[data-quick-action]').forEach((button) => button.addEventListener('click', () => {
+    const action = button.dataset.quickAction;
+    if (action === 'record') { showBrowseWorkspace(); toggleTool('recorder'); }
+    if (action === 'inspect') { showBrowseWorkspace(); toggleTool('inspector'); }
+    if (action === 'recordings') { showBrowseWorkspace(); showSavedRecordings(); }
+    if (action === 'reports') showRunHistoryPanel();
+  }));
+  document.getElementById('command-input')?.addEventListener('input', (event) => { commandSelection = 0; renderCommandResults(event.target.value); });
+  document.getElementById('command-palette')?.addEventListener('click', (event) => {
+    if (event.target.id === 'command-palette') closeCommandPalette();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.ctrlKey && event.key.toLowerCase() === 'k') { event.preventDefault(); openCommandPalette(); return; }
+    if (event.key === 'Escape') { closeCommandPalette(); return; }
+    const palette = document.getElementById('command-palette');
+    if (!palette?.classList.contains('hidden')) {
+      const commands = getFilteredCommands(document.getElementById('command-input')?.value);
+      if (commands.length && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+        event.preventDefault();
+        commandSelection = (commandSelection + (event.key === 'ArrowDown' ? 1 : -1) + commands.length) % commands.length;
+        renderCommandResults(document.getElementById('command-input')?.value);
+      }
+      if (event.key === 'Enter' && commands[commandSelection]) { event.preventDefault(); runCommand(phase1Commands.indexOf(commands[commandSelection])); }
+      return;
+    }
+    if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'b') { event.preventDefault(); showHomeWorkspace(); }
+    if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'i') { event.preventDefault(); toggleTool('inspector'); }
+    if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'r') { event.preventDefault(); toggleTool('recorder'); }
+    if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 's') { event.preventDefault(); toggleTool('scraper'); }
+    if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'p') { event.preventDefault(); showRunHistoryPanel(); }
+    if (event.ctrlKey && !event.shiftKey && event.key.toLowerCase() === 'h') { event.preventDefault(); showBrowsingHistory(); }
+    if (event.key === 'F1') { event.preventDefault(); showHelp(); }
+    if (event.ctrlKey && event.key === ',') { event.preventDefault(); sidePanel.classList.add('open'); showPluginsPanel(); }
+  });
+
+  const toolbarLabels = {
+    'btn-new-tab': 'New tab (Ctrl+T)', 'btn-back': 'Back (Alt+Left)', 'btn-forward': 'Forward (Alt+Right)',
+    'btn-refresh': 'Refresh (Ctrl+R)', 'btn-home': 'Workspace home', 'btn-bookmark': 'Bookmark this page',
+    'btn-menu': 'Main menu', 'btn-close-panel': 'Close tool panel (Esc)'
+  };
+  Object.entries(toolbarLabels).forEach(([id, label]) => {
+    const button = document.getElementById(id);
+    if (button) { button.title = label; button.setAttribute('aria-label', label); }
+  });
+  document.querySelectorAll('.window-btn').forEach((button) => {
+    const label = button.classList.contains('minimize-btn') ? 'Minimize window' : button.classList.contains('maximize-btn') ? 'Maximize window' : 'Close window';
+    button.title = label; button.setAttribute('aria-label', label);
+  });
   
   // Tab controls
   const btnNewTab = document.getElementById('btn-new-tab');
@@ -3290,6 +5060,11 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('menu-history')?.addEventListener('click', () => {
       menuDropdown.classList.add('hidden');
       showBrowsingHistory();
+    });
+    document.getElementById('menu-plugins')?.addEventListener('click', () => {
+      menuDropdown.classList.add('hidden');
+      sidePanel.classList.add('open');
+      showPluginsPanel();
     });
     
     document.getElementById('menu-help')?.addEventListener('click', () => {

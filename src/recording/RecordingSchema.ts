@@ -6,11 +6,16 @@ export const MAX_RECORDING_ACTIONS = 10_000;
 const ACTION_TYPES = new Set<ActionType>([
   'click', 'input', 'select', 'drag', 'upload', 'navigate', 'assert', 'wait',
   'hover', 'keyboard', 'keypress', 'scroll', 'doubleclick', 'rightclick',
-  'checkbox', 'radio', 'focus', 'dragstart', 'drop', 'submit', 'waitForPageLoad',
+  'checkbox', 'radio', 'focus', 'dragstart', 'drop', 'submit', 'waitForPageLoad', 'scrape',
+  'visual', 'api', 'mockNetwork', 'accessibility', 'performance',
+  'plugin',
 ]);
 const ASSERTION_KINDS = new Set<AssertionMetadata['kind']>([
-  'text-contains', 'visible', 'value-equals', 'attribute-equals',
+  'text-contains', 'visible', 'value-equals', 'attribute-equals', 'count-equals',
+  'url-equals', 'url-contains', 'title-equals', 'response-status',
 ]);
+const WAIT_KINDS = new Set(['time', 'element', 'url', 'response', 'dom', 'page-load']);
+const WAIT_STATES = new Set(['attached', 'detached', 'visible', 'hidden']);
 
 export interface RecordingDocument {
   schemaVersion: typeof RECORDING_SCHEMA_VERSION;
@@ -55,23 +60,75 @@ export function validateRecordedAction(value: unknown, path = 'action'): Recorde
   if (value.metadata !== undefined) {
     if (!isRecord(value.metadata)) {
       issues.push(`${path}.metadata must be an object`);
-    } else if (value.type === 'assert') {
+    } else {
+      if (value.metadata.breakpoint !== undefined && typeof value.metadata.breakpoint !== 'boolean') {
+        issues.push(`${path}.metadata.breakpoint must be a boolean`);
+      }
+      if (value.metadata.disabled !== undefined && typeof value.metadata.disabled !== 'boolean') {
+        issues.push(`${path}.metadata.disabled must be a boolean`);
+      }
       if (
+        value.metadata.timeoutMs !== undefined &&
+        (!Number.isFinite(value.metadata.timeoutMs) || Number(value.metadata.timeoutMs) <= 0)
+      ) {
+        issues.push(`${path}.metadata.timeoutMs must be a positive number`);
+      }
+      if (
+        value.metadata.maxRetries !== undefined &&
+        (!Number.isInteger(value.metadata.maxRetries) || Number(value.metadata.maxRetries) < 0)
+      ) {
+        issues.push(`${path}.metadata.maxRetries must be a non-negative integer`);
+      }
+      if (
+        value.metadata.retryDelayMs !== undefined &&
+        (!Number.isFinite(value.metadata.retryDelayMs) || Number(value.metadata.retryDelayMs) < 0)
+      ) {
+        issues.push(`${path}.metadata.retryDelayMs must be a non-negative number`);
+      }
+      if (
+        value.metadata.frameSelectors !== undefined &&
+        (
+          !Array.isArray(value.metadata.frameSelectors) ||
+          value.metadata.frameSelectors.length === 0 ||
+          value.metadata.frameSelectors.length > 10 ||
+          !value.metadata.frameSelectors.every(
+            (selector) => typeof selector === 'string' && selector.length > 0 && selector.length <= 4096
+          )
+        )
+      ) {
+        issues.push(`${path}.metadata.frameSelectors must contain 1 to 10 valid selectors`);
+      }
+      if (value.type === 'assert' && (
         typeof value.metadata.kind !== 'string' ||
         !ASSERTION_KINDS.has(value.metadata.kind as AssertionMetadata['kind'])
-      ) {
+      )) {
         issues.push(`${path}.metadata.kind is not a supported assertion`);
       }
-    } else if (
-      value.type === 'upload' &&
-      'files' in value.metadata &&
-      (
+      if (
+        value.type === 'wait' &&
+        value.metadata.waitKind !== undefined &&
+        (typeof value.metadata.waitKind !== 'string' || !WAIT_KINDS.has(value.metadata.waitKind))
+      ) {
+        issues.push(`${path}.metadata.waitKind is not supported`);
+      }
+      if (
+        value.type === 'wait' &&
+        value.metadata.state !== undefined &&
+        (typeof value.metadata.state !== 'string' || !WAIT_STATES.has(value.metadata.state))
+      ) {
+        issues.push(`${path}.metadata.state is not supported`);
+      }
+      if (
+        value.type === 'upload' &&
+        'files' in value.metadata &&
+        (
         !Array.isArray(value.metadata.files) ||
         value.metadata.files.length === 0 ||
         !value.metadata.files.every((file) => typeof file === 'string' && file.length > 0)
-      )
-    ) {
-      issues.push(`${path}.metadata.files must be a non-empty string array`);
+        )
+      ) {
+        issues.push(`${path}.metadata.files must be a non-empty string array`);
+      }
     }
   }
 

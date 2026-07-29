@@ -41,7 +41,8 @@ export class Inspector {
     console.log('Element inspection mode deactivated');
   }
 
-  async inspectElement(element: any): Promise<ElementInfo> {
+  async inspectElement(element: unknown): Promise<ElementInfo> {
+    void element;
     // TODO: Implement element inspection logic
     console.log('Inspecting element...');
     return {
@@ -56,7 +57,8 @@ export class Inspector {
     };
   }
 
-  async generateLocators(element: any): Promise<LocatorStrategy[]> {
+  async generateLocators(element: unknown): Promise<LocatorStrategy[]> {
+    void element;
     // TODO: Implement multi-strategy locator generation
     console.log('Generating locators for element...');
     return [];

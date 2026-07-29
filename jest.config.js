@@ -8,4 +8,12 @@ module.exports = {
     '!src/**/*.d.ts',
   ],
   moduleFileExtensions: ['ts', 'tsx', 'js', 'jsx', 'json', 'node'],
+  coverageThreshold: {
+    global: {
+      branches: 20,
+      functions: 30,
+      lines: 40,
+      statements: 40,
+    },
+  },
 };

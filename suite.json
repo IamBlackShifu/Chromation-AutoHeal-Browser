@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "suites": [
+    {
+      "id": "cli-validation-suite",
+      "name": "CLI Validation",
+      "description": "Self-contained fixture for validating headless CLI and matrix execution.",
+      "tags": [
+        "cli"
+      ],
+      "tests": [
+        {
+          "id": "cli-smoke-test",
+          "name": "Headless browser smoke test",
+          "tags": [
+            "smoke"
+          ],
+          "enabled": true,
+          "actions": [
+            {
+              "type": "navigate",
+              "selector": "page",
+              "value": "data:text/html,<title>Chromation CLI</title><main><h1>CLI Ready</h1></main>",
+              "timestamp": 1
+            },
+            {
+              "type": "assert",
+              "selector": "window",
+              "timestamp": 2,
+              "metadata": {
+                "kind": "title-equals",
+                "expected": "Chromation CLI"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

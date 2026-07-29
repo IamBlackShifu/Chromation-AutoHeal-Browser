@@ -3,7 +3,7 @@
  * This creates the browser window and handles the main application lifecycle
  */
 
-const { app, BrowserWindow, ipcMain, Menu, dialog, webContents } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, dialog, webContents, session, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const {
@@ -13,6 +13,8 @@ const {
 
 let mainWindow;
 let browserView;
+const MAX_RECORDING_FILE_BYTES = 10 * 1024 * 1024;
+const originPermissions = new Map();
 
 function createWindow() {
   // Create the main application window
@@ -143,6 +145,7 @@ function createMenu() {
 
 // App lifecycle
 app.whenReady().then(() => {
+  configureGuestPermissions();
   createWindow();
 
   app.on('activate', () => {
@@ -175,6 +178,33 @@ ipcMain.on('start-recording', (event, mode) => {
 ipcMain.on('export-script', (event, format) => {
   console.log('Exporting script in format:', format);
 });
+
+function configureGuestPermissions() {
+  const guestSession = session.fromPartition('persist:chromation');
+  const isAllowed = (origin, permission) =>
+    originPermissions.get(origin)?.has(permission) === true;
+  guestSession.setPermissionCheckHandler((_webContents, permission, requestingOrigin) =>
+    isAllowed(requestingOrigin, permission)
+  );
+  guestSession.setPermissionRequestHandler((contents, permission, callback, details) => {
+    try {
+      const origin = details.requestingUrl
+        ? new URL(details.requestingUrl).origin
+        : new URL(contents.getURL()).origin;
+      callback(isAllowed(origin, permission));
+    } catch {
+      callback(false);
+    }
+  });
+}
+
+function readRecordingFile(filePath) {
+  const stats = fs.statSync(filePath);
+  if (!stats.isFile() || stats.size <= 0 || stats.size > MAX_RECORDING_FILE_BYTES) {
+    throw new Error('Recording file must be a non-empty JSON file no larger than 10 MB');
+  }
+  return fs.readFileSync(filePath, 'utf8');
+}
 
 app.on('web-contents-created', (_event, contents) => {
   contents.on('will-attach-webview', (_attachEvent, webPreferences) => {
@@ -275,6 +305,84 @@ ipcMain.handle('set-upload-files', async (event, request) => {
 
 // Recordings directory management
 const recordingsDir = path.join(app.getPath('userData'), 'saved-recordings');
+const runHistoryPath = path.join(app.getPath('userData'), 'run-history.json');
+const browsingHistoryPath = path.join(app.getPath('userData'), 'browsing-history.json');
+
+function readBrowsingHistory() {
+  if (!fs.existsSync(browsingHistoryPath)) return [];
+  const parsed = JSON.parse(fs.readFileSync(browsingHistoryPath, 'utf8'));
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+function writeBrowsingHistory(entries) {
+  fs.writeFileSync(browsingHistoryPath, JSON.stringify(entries.slice(0, 5000), null, 2));
+}
+const environmentVaultPath = path.join(app.getPath('userData'), 'environment-vault.json');
+
+function readEnvironmentVault() {
+  if (!fs.existsSync(environmentVaultPath)) return {};
+  const stored = JSON.parse(fs.readFileSync(environmentVaultPath, 'utf8'));
+  return stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {};
+}
+
+function validateEnvironmentName(name) {
+  if (typeof name !== 'string' || !/^[A-Z][A-Z0-9_]{0,127}$/i.test(name)) {
+    throw new Error('Environment variable name must contain only letters, numbers, and underscores');
+  }
+}
+
+ipcMain.handle('set-environment-variable', async (_event, { name, value }) => {
+  try {
+    validateEnvironmentName(name);
+    if (typeof value !== 'string' || value.length > 64 * 1024) {
+      throw new Error('Environment variable value must be a string no larger than 64 KB');
+    }
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new Error('Operating-system credential encryption is not available');
+    }
+    const vault = readEnvironmentVault();
+    vault[name] = safeStorage.encryptString(value).toString('base64');
+    fs.writeFileSync(environmentVaultPath, JSON.stringify(vault, null, 2), { mode: 0o600 });
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('get-environment-variable', async (_event, name) => {
+  try {
+    validateEnvironmentName(name);
+    const encrypted = readEnvironmentVault()[name];
+    if (typeof encrypted !== 'string') return { success: true, value: null };
+    return {
+      success: true,
+      value: safeStorage.decryptString(Buffer.from(encrypted, 'base64')),
+    };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('list-environment-variables', async () => ({
+  success: true,
+  names: Object.keys(readEnvironmentVault()).sort(),
+}));
+
+ipcMain.handle('set-origin-permission', async (_event, { origin, permission, allowed }) => {
+  try {
+    const normalizedOrigin = new URL(origin).origin;
+    if (typeof permission !== 'string' || permission.length > 100 || typeof allowed !== 'boolean') {
+      throw new Error('Invalid permission request');
+    }
+    const permissions = originPermissions.get(normalizedOrigin) ?? new Set();
+    if (allowed) permissions.add(permission);
+    else permissions.delete(permission);
+    originPermissions.set(normalizedOrigin, permissions);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
 
 function resolveRecordingPath(filename) {
   if (typeof filename !== 'string' || path.basename(filename) !== filename || !filename.endsWith('.json')) {
@@ -321,7 +429,7 @@ ipcMain.handle('load-recordings', async () => {
       .map(file => {
         try {
           const filePath = path.join(recordingsDir, file);
-          const content = fs.readFileSync(filePath, 'utf8');
+          const content = readRecordingFile(filePath);
           const data = parseRecordingDocument(JSON.parse(content));
           return {
             filename: file,
@@ -348,13 +456,139 @@ ipcMain.handle('load-recordings', async () => {
 ipcMain.handle('load-recording', async (event, filename) => {
   try {
     const filePath = resolveRecordingPath(filename);
-    const content = fs.readFileSync(filePath, 'utf8');
+    const content = readRecordingFile(filePath);
     const recording = parseRecordingDocument(JSON.parse(content));
     
     console.log('Recording loaded:', filename);
     return { success: true, recording };
   } catch (error) {
     console.error('Failed to load recording:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('save-run-history', async (event, serializedHistory) => {
+  try {
+    const parsed = JSON.parse(String(serializedHistory || '[]'));
+    if (!Array.isArray(parsed)) throw new Error('Run history must be an array');
+    fs.writeFileSync(runHistoryPath, JSON.stringify(parsed, null, 2));
+    return { success: true };
+  } catch (error) {
+    console.error('Failed to save run history:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('load-run-history', async () => {
+  try {
+    if (!fs.existsSync(runHistoryPath)) return { success: true, history: '[]' };
+    const history = fs.readFileSync(runHistoryPath, 'utf8');
+    JSON.parse(history);
+    return { success: true, history };
+  } catch (error) {
+    console.error('Failed to load run history:', error);
+    return { success: false, error: error.message, history: '[]' };
+  }
+});
+
+ipcMain.handle('add-browsing-history', async (event, visit) => {
+  try {
+    const url = String(visit?.url || '').trim();
+    if (!/^https?:\/\//i.test(url)) return { success: false, error: 'Only HTTP(S) visits can be stored' };
+    const entries = readBrowsingHistory();
+    const timestamp = Number(visit?.timestamp) || Date.now();
+    const recent = entries[0];
+    if (recent && recent.url === url && timestamp - recent.timestamp < 5000) {
+      recent.title = String(visit?.title || recent.title || url).slice(0, 300);
+      recent.timestamp = timestamp;
+      writeBrowsingHistory(entries);
+      return { success: true, entry: recent };
+    }
+    const entry = {
+      id: `${timestamp}_${Math.random().toString(36).slice(2, 10)}`,
+      url,
+      title: String(visit?.title || url).slice(0, 300),
+      timestamp,
+    };
+    entries.unshift(entry);
+    writeBrowsingHistory(entries);
+    return { success: true, entry };
+  } catch (error) {
+    console.error('Failed to add browsing history:', error);
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('load-browsing-history', async () => {
+  try {
+    return { success: true, entries: readBrowsingHistory() };
+  } catch (error) {
+    return { success: false, error: error.message, entries: [] };
+  }
+});
+
+ipcMain.handle('delete-browsing-history-entry', async (event, id) => {
+  try {
+    const entries = readBrowsingHistory();
+    writeBrowsingHistory(entries.filter((entry) => entry.id !== String(id)));
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('clear-browsing-history', async () => {
+  try {
+    writeBrowsingHistory([]);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('get-app-diagnostics', async () => {
+  const paths = {
+    userData: app.getPath('userData'),
+    recordings: recordingsDir,
+    runHistory: runHistoryPath,
+    browsingHistory: browsingHistoryPath,
+  };
+  const stores = Object.entries(paths).map(([name, target]) => {
+    try {
+      const stat = fs.existsSync(target) ? fs.statSync(target) : null;
+      return { name, path: target, exists: Boolean(stat), bytes: stat?.isFile() ? stat.size : 0, healthy: true };
+    } catch (error) {
+      return { name, path: target, exists: false, bytes: 0, healthy: false, error: error.message };
+    }
+  });
+  return {
+    success: true,
+    versions: { app: app.getVersion(), electron: process.versions.electron, chrome: process.versions.chrome, node: process.versions.node },
+    platform: { os: process.platform, architecture: process.arch },
+    stores,
+    permissions: [...originPermissions.entries()].map(([origin, permission]) => ({ origin, permission })),
+    safeStorageAvailable: safeStorage.isEncryptionAvailable(),
+    timestamp: Date.now(),
+  };
+});
+
+// Rename a recording while keeping its actions and metadata intact.
+ipcMain.handle('rename-recording', async (event, { filename, name }) => {
+  try {
+    const cleanName = String(name || '').trim();
+    if (!cleanName || cleanName.length > 100) throw new Error('Recording name must be between 1 and 100 characters');
+    const sourcePath = resolveRecordingPath(filename);
+    const recording = parseRecordingDocument(JSON.parse(readRecordingFile(sourcePath)));
+    const timestamp = Number(recording.timestamp) || Date.now();
+    const targetFilename = `${cleanName.replace(/[^a-z0-9]/gi, '_')}_${timestamp}.json`;
+    const targetPath = path.join(recordingsDir, targetFilename);
+    if (targetPath !== sourcePath && fs.existsSync(targetPath)) throw new Error('A recording with that name already exists');
+    const updated = { ...recording, name: cleanName, updatedAt: new Date().toISOString() };
+    fs.writeFileSync(targetPath, JSON.stringify(updated, null, 2));
+    if (targetPath !== sourcePath) fs.unlinkSync(sourcePath);
+    return { success: true, filename: targetFilename, recording: updated };
+  } catch (error) {
+    console.error('Failed to rename recording:', error);
     return { success: false, error: error.message };
   }
 });
@@ -390,7 +624,7 @@ ipcMain.handle('import-recording', async () => {
     }
     
     const filePath = result.filePaths[0];
-    const content = fs.readFileSync(filePath, 'utf8');
+    const content = readRecordingFile(filePath);
     const recording = parseRecordingDocument(JSON.parse(content));
     
     // Copy to recordings directory

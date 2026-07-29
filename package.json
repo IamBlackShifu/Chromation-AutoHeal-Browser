@@ -7,9 +7,12 @@
     "build": "tsc && webpack --config config/webpack.config.js",
     "dev": "tsc --watch",
     "test": "jest",
+    "test:coverage": "jest --coverage --runInBand",
     "lint": "eslint src/**/*.ts",
+    "check": "npm run lint && npm test -- --runInBand && npm run build",
     "start": "npm run build && electron .",
     "start:cli": "node dist/index.js",
+    "run:cli": "npm run build && node dist/cli.js",
     "demo": "npx tsc example.ts --module commonjs --esModuleInterop --target es2020 && node example.js"
   },
   "keywords": [
@@ -27,6 +30,10 @@
   ],
   "author": "IamBlackShifu",
   "license": "MIT",
+  "engines": {
+    "node": ">=20 <23",
+    "npm": ">=10"
+  },
   "dependencies": {
     "@electron/remote": "^2.1.3",
     "chrome-remote-interface": "^0.33.0",

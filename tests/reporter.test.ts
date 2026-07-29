@@ -18,6 +18,7 @@ describe('Reporter', () => {
       options: {
         continueOnFailure: false,
         defaultStepTimeoutMs: 5000,
+        globalTimeoutMs: 300000,
       },
       steps: [
         {
@@ -91,7 +92,7 @@ describe('Reporter', () => {
       endedAt: 200,
       durationMs: 100,
       status: 'passed',
-      options: { continueOnFailure: false, defaultStepTimeoutMs: 5000 },
+      options: { continueOnFailure: false, defaultStepTimeoutMs: 5000, globalTimeoutMs: 300000 },
       steps: [{
         index: 0,
         action: { type: 'click', selector: '#old<script>', timestamp: 100 },

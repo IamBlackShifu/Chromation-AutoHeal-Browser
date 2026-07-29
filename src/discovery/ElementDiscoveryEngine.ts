@@ -39,6 +39,25 @@ export interface NamingContext {
   semanticRole?: string;
 }
 
+interface DiscoveryWebview {
+  executeJavaScript(script: string): Promise<unknown>;
+}
+
+interface RawDiscoveredElement {
+  tagName: string;
+  elementType: string;
+  attributes: Record<string, string>;
+  visibleText: string;
+  ariaLabel: string;
+  ariaRole: string;
+  labelText: string;
+  section: string;
+  formContext: string;
+  nearestHeading: string;
+  domPath: string;
+  pageTitle: string;
+}
+
 export class ElementDiscoveryEngine {
   private selectorPriority = ['data-testid', 'data-test', 'data-qa', 'id', 'aria', 'label', 'css', 'xpath'];
 
@@ -49,7 +68,7 @@ export class ElementDiscoveryEngine {
   /**
    * Discover all interactive elements on a page
    */
-  async discoverElements(webview: any): Promise<DiscoveredElement[]> {
+  async discoverElements(webview: DiscoveryWebview): Promise<DiscoveredElement[]> {
     try {
       const elementsData = await webview.executeJavaScript(`
         (function() {
@@ -153,20 +172,21 @@ export class ElementDiscoveryEngine {
               section: section,
               formContext: formContext,
               nearestHeading: nearestHeading,
-              domPath: getDomPath(el)
+              domPath: getDomPath(el),
+              pageTitle: document.title
             });
           });
           
           return elements;
         })();
-      `);
+      `) as RawDiscoveredElement[];
 
       // Process and generate selectors for each element
       const discoveredElements: DiscoveredElement[] = [];
       
       for (const elData of elementsData) {
         const selectors = this.generateSelectors(elData);
-        const name = this.generateSemanticName(elData, document.title);
+        const name = this.generateSemanticName(elData, elData.pageTitle);
         
         discoveredElements.push({
           name,
@@ -198,7 +218,7 @@ export class ElementDiscoveryEngine {
   /**
    * Generate multiple selector strategies with confidence scoring
    */
-  private generateSelectors(element: any): ElementSelector[] {
+  private generateSelectors(element: RawDiscoveredElement): ElementSelector[] {
     const selectors: ElementSelector[] = [];
     const attrs = element.attributes;
 
@@ -297,7 +317,7 @@ export class ElementDiscoveryEngine {
   /**
    * Generate semantic name following pattern: {page}_{section}_{purpose}_{elementType}
    */
-  private generateSemanticName(element: any, pageTitle: string): string {
+  private generateSemanticName(element: RawDiscoveredElement, pageTitle: string): string {
     const parts: string[] = [];
 
     // 1. Page name

@@ -34,13 +34,15 @@ export class UIManager {
     console.log(`Low performance mode: ${enabled ? 'enabled' : 'disabled'}`);
   }
 
-  showElementHighlight(element: any): void {
+  showElementHighlight(element: unknown): void {
+    void element;
     if (!this.animationsEnabled) return;
     // TODO: Add GPU-accelerated highlight overlay
     console.log('Showing element highlight');
   }
 
-  showHealingIndicator(element: any): void {
+  showHealingIndicator(element: unknown): void {
+    void element;
     if (!this.animationsEnabled) return;
     // TODO: Add healing glow effect
     console.log('Showing healing indicator');

@@ -122,4 +122,84 @@ describe('Recorder', () => {
       timestamp: 100,
     })).toBe(false);
   });
+
+  test('edits, duplicates, disables, reorders, and deletes steps safely', () => {
+    recorder.setActions([
+      { type: 'click', selector: '#first', timestamp: 1 },
+      { type: 'input', selector: '#second', value: 'old', timestamp: 2 },
+    ]);
+
+    recorder.updateAction(1, {
+      type: 'input',
+      selector: '#second',
+      value: 'updated',
+      timestamp: 3,
+    });
+    recorder.duplicateAction(0);
+    expect(recorder.getActions()).toHaveLength(3);
+    expect(recorder.getActions()[1].selector).toBe('#first');
+
+    expect(recorder.moveAction(2, 0)).toBe(true);
+    expect(recorder.getActions()[0].value).toBe('updated');
+
+    recorder.setActionDisabled(1, true);
+    expect(recorder.getActions()[1].metadata).toEqual(expect.objectContaining({ disabled: true }));
+
+    const deleted = recorder.deleteAction(2);
+    expect(deleted.selector).toBe('#first');
+    expect(recorder.getActions()).toHaveLength(2);
+    expect(() => recorder.deleteAction(99)).toThrow('out of range');
+  });
+
+  test('omits disabled steps and exports extended Playwright assertions', async () => {
+    recorder.setActions([
+      { type: 'click', selector: '#disabled', timestamp: 1, metadata: { disabled: true } },
+      {
+        type: 'assert',
+        selector: '.row',
+        timestamp: 2,
+        metadata: { kind: 'count-equals', expected: '3' },
+      },
+      {
+        type: 'assert',
+        selector: 'window',
+        timestamp: 3,
+        metadata: { kind: 'url-contains', expected: '/dashboard' },
+      },
+      {
+        type: 'assert',
+        selector: 'window',
+        timestamp: 4,
+        metadata: { kind: 'response-status', expected: '200', responseUrl: '/api/items' },
+      },
+    ]);
+
+    const script = await recorder.exportScript('playwright');
+    expect(script).not.toContain('#disabled');
+    expect(script).toContain("page.locator('.row').count()");
+    expect(script).toContain("page.url().includes('/dashboard')");
+    expect(script).toContain("response.url().includes('/api/items')");
+  });
+
+  test.each([
+    ['playwright', 'playwright'],
+    ['selenium-js', 'selenium-webdriver'],
+    ['cypress', 'describe('],
+    ['puppeteer', 'puppeteer'],
+    ['cdp', 'chrome-remote-interface'],
+    ['selenium-python', 'webdriver.Chrome'],
+    ['selenium-java', 'ChromeDriver'],
+  ] as const)('generates a non-placeholder executable %s export', async (format, marker) => {
+    recorder.setActions([
+      { type: 'navigate', selector: 'page', value: 'https://example.test', timestamp: 1 },
+      { type: 'click', selector: '#submit', timestamp: 2 },
+      { type: 'input', selector: '#name', value: 'Ada', timestamp: 3 },
+    ]);
+    const script = await recorder.exportScript(format);
+    expect(script).toContain(marker);
+    expect(script).not.toMatch(/placeholder|TODO/i);
+    if (!format.startsWith('selenium-p') && format !== 'selenium-java') {
+      expect(() => new Function(script)).not.toThrow();
+    }
+  });
 });

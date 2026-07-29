@@ -111,4 +111,29 @@ describe('HealingEngine', () => {
     engine.clearHistory();
     expect(engine.getHealingHistory()).toEqual([]);
   });
+
+  test('supports approval policies, approved locator reuse, and history comparison', async () => {
+    const engine = new HealingEngine({ confidenceThreshold: 0.5, approvalPolicy: 'ask' });
+    const page = pageWithCandidates([
+      {
+        selector: '[data-testid="save"]',
+        fingerprint: {
+          tagName: 'button',
+          attributes: { 'data-testid': 'save' },
+          text: 'Save',
+        },
+      },
+    ]);
+    const proposal = await engine.healLocator('#old-save', page, {
+      tagName: 'button', attributes: { 'data-testid': 'save' }, text: 'Save',
+    });
+    expect(proposal).toMatchObject({ applied: false, approved: false, policy: 'ask' });
+    engine.approve(proposal!);
+    expect(engine.getApprovedLocators()['#old-save']).toBe('[data-testid="save"]');
+    const reused = await engine.healLocator('#old-save', page, {
+      tagName: 'button', attributes: { 'data-testid': 'save' },
+    });
+    expect(reused).toMatchObject({ strategy: 'previously-approved', applied: true });
+    expect(engine.compareHistory()[0].attempts).toBe(2);
+  });
 });

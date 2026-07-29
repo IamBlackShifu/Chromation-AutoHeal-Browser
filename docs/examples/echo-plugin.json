@@ -1,0 +1,20 @@
+{
+  "manifest": {
+    "id": "example.echo",
+    "name": "Echo Action",
+    "version": "1.0.0",
+    "apiVersion": "1.0.0",
+    "description": "Example Chromation custom action.",
+    "permissions": [
+      "actions:register"
+    ],
+    "configuration": {
+      "prefix": {
+        "type": "string",
+        "title": "Message prefix",
+        "default": "Echo"
+      }
+    }
+  },
+  "source": "function activate(chromation) {\n  chromation.actions.register({\n    id: 'echo.action',\n    label: 'Echo value',\n    execute(payload) {\n      const config = chromation.configuration.get();\n      return { message: config.prefix + ': ' + payload.value };\n    }\n  });\n}"
+}

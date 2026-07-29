@@ -126,6 +126,12 @@
             </svg>
             <span>History</span>
           </div>
+          <div class="menu-item" id="menu-plugins">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 2v6m0 8v6M2 12h6m8 0h6"></path><circle cx="12" cy="12" r="4"></circle>
+            </svg>
+            <span>Plugins</span><span class="menu-status">SDK</span>
+          </div>
           <div class="menu-divider"></div>
           <div class="menu-item" id="menu-help">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -168,10 +174,50 @@
       </div>
     </div>
 
-    <!-- Main Content Area -->
-    <div class="main-content">
+    <div class="execution-bar hidden" id="execution-bar" aria-live="polite">
+      <div class="execution-identity"><span class="execution-pulse"></span><div><strong id="execution-bar-title">Running test</strong><small id="execution-bar-step">Preparing execution…</small></div></div>
+      <div class="execution-progress"><div><span id="execution-bar-progress"></span></div><small id="execution-bar-elapsed">00:00</small></div>
+      <span class="execution-failures" id="execution-bar-failures">0 failures</span>
+      <div class="execution-actions"><button id="execution-pause" title="Pause execution">Ⅱ</button><button id="execution-resume" class="hidden" title="Resume execution">▶</button><button id="execution-step" title="Run one step">↦</button><button id="execution-stop" class="danger" title="Stop execution">■</button></div>
+    </div>
+
+    <div class="workspace-shell">
+      <aside class="tool-rail" id="tool-rail" aria-label="Automation tools">
+        <button class="rail-action active" data-workspace="browse" title="Browse (Ctrl+Shift+B)" aria-label="Browse"><span class="rail-icon">⌂</span><span>Browse</span></button>
+        <button class="rail-action" data-tool="inspector" title="Inspect (Ctrl+Shift+I)" aria-label="Inspect"><span class="rail-icon">⌖</span><span>Inspect</span></button>
+        <button class="rail-action" data-tool="recorder" title="Record (Ctrl+Shift+R)" aria-label="Record"><span class="rail-icon">●</span><span>Record</span><span class="rail-badge recording-dot hidden" id="rail-recording-badge"></span><span class="rail-badge" id="rail-action-count">0</span></button>
+        <button class="rail-action" data-action="replay" title="Replay recording (Ctrl+Enter)" aria-label="Replay"><span class="rail-icon">▷</span><span>Replay</span></button>
+        <button class="rail-action" data-tool="scraper" title="Scrape (Ctrl+Shift+S)" aria-label="Scrape"><span class="rail-icon">▦</span><span>Scrape</span></button>
+        <button class="rail-action" data-action="reports" title="Reports (Ctrl+Shift+P)" aria-label="Reports"><span class="rail-icon">▤</span><span>Reports</span><span class="rail-badge danger" id="rail-failure-count">0</span><span class="rail-badge success" id="rail-healing-count">0</span></button>
+        <button class="rail-action" data-action="settings" title="Settings (Ctrl+,)" aria-label="Settings"><span class="rail-icon">⚙</span><span>Settings</span></button>
+      </aside>
+
+      <!-- Main Content Area -->
+      <div class="main-content">
+        <section class="home-workspace hidden" id="home-workspace" aria-label="Chromation workspace">
+          <header class="home-hero">
+            <div><p class="eyebrow">AUTOMATION WORKSPACE</p><h1>Good testing starts here.</h1><p>Record a flow, replay a suite, or inspect recent execution health.</p></div>
+            <button class="primary-action" id="home-start-recording">● Start recording</button>
+          </header>
+          <div class="health-grid">
+            <article><span>Project health</span><strong id="home-health-score">—</strong><small>Pass rate</small></article>
+            <article><span>Recent runs</span><strong id="home-run-count">0</strong><small>Execution history</small></article>
+            <article><span>Failures</span><strong id="home-failure-count">0</strong><small>Needs attention</small></article>
+            <article><span>Auto-healed</span><strong id="home-healed-count">0</strong><small>Recovered locators</small></article>
+          </div>
+          <div class="home-grid">
+            <section class="home-card"><div class="card-heading"><h2>Quick start</h2><span>Common workflows</span></div><div class="quick-actions">
+              <button data-quick-action="record">Record a test<small>Capture browser actions</small></button>
+              <button data-quick-action="inspect">Inspect a page<small>Find resilient locators</small></button>
+              <button data-quick-action="recordings">Open recordings<small>Replay saved flows</small></button>
+              <button data-quick-action="reports">Review reports<small>Investigate failures</small></button>
+            </div></section>
+            <section class="home-card"><div class="card-heading"><h2>Recent recordings</h2><button id="home-all-recordings">View all</button></div><div class="recent-list" id="home-recent-recordings"><p class="empty-state">No recordings yet.</p></div></section>
+            <section class="home-card wide"><div class="card-heading"><h2>Recent runs</h2><button id="home-all-runs">View reports</button></div><div class="recent-list" id="home-recent-runs"><p class="empty-state">No runs yet.</p></div></section>
+          </div>
+        </section>
       <!-- Browser View (webview) -->
-      <div class="browser-view">
+      <div class="browser-view" id="browser-view">
         <webview 
           id="browser-webview" 
           src="about:blank"
@@ -182,8 +228,13 @@
         ></webview>
       </div>
 
+      <section class="report-workspace hidden" id="report-workspace" aria-label="Replay execution report">
+        <div id="report-workspace-content"></div>
+      </section>
+
       <!-- Side Panel for Tools -->
       <div class="side-panel" id="side-panel">
+        <div class="panel-resize-handle" id="panel-resize-handle" role="separator" aria-orientation="vertical" aria-label="Resize tool panel"></div>
         <div class="panel-header">
           <h3 id="panel-title">Tools</h3>
           <button id="btn-close-panel" class="close-btn">×</button>
@@ -192,6 +243,7 @@
           <p class="panel-hint">Select a tool from the toolbar to get started</p>
         </div>
       </div>
+    </div>
     </div>
 
     <!-- Status Bar -->
@@ -205,6 +257,43 @@
       <div class="status-item">
         <span id="recording-status"></span>
       </div>
+    </div>
+  </div>
+
+  <div class="command-palette-backdrop hidden" id="command-palette" role="dialog" aria-modal="true" aria-label="Command palette">
+    <div class="command-palette">
+      <div class="command-search"><span>⌕</span><input id="command-input" type="text" placeholder="Search actions, tools, and reports…" autocomplete="off"><kbd>Esc</kbd></div>
+      <div class="command-results" id="command-results" role="listbox"></div>
+      <footer><span>↑↓ Navigate</span><span>Enter Run</span><span>Ctrl+K Commands</span></footer>
+    </div>
+  </div>
+
+  <div class="save-dialog-backdrop hidden" id="recording-name-dialog" role="dialog" aria-modal="true" aria-labelledby="recording-name-title">
+    <form class="save-dialog" id="recording-name-form">
+      <div class="dialog-mark">●</div>
+      <div><p class="eyebrow">SAVE TEST FLOW</p><h2 id="recording-name-title">Name this recording</h2>
+        <p class="dialog-copy">Use a clear name so your team can recognize and reuse this flow.</p></div>
+      <label for="recording-name-input">Recording name</label>
+      <input id="recording-name-input" maxlength="100" autocomplete="off" required>
+      <p class="field-help" id="recording-name-context"></p>
+      <div class="dialog-actions"><button type="button" class="secondary-btn" id="recording-name-cancel">Cancel</button><button type="submit" class="primary-action">Save recording</button></div>
+    </form>
+  </div>
+
+  <div class="save-dialog-backdrop hidden" id="confirmation-sheet" role="alertdialog" aria-modal="true" aria-labelledby="confirmation-title">
+    <div class="save-dialog confirmation-sheet">
+      <div class="dialog-mark warning">!</div><div><h2 id="confirmation-title">Confirm action</h2><p class="dialog-copy" id="confirmation-message"></p></div>
+      <div class="dialog-actions"><button class="secondary-btn" id="confirmation-cancel">Cancel</button><button class="primary-action danger-action" id="confirmation-accept">Confirm</button></div>
+    </div>
+  </div>
+
+  <div class="onboarding-backdrop hidden" id="onboarding-dialog" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
+    <div class="onboarding-card">
+      <button class="onboarding-skip" id="onboarding-skip" aria-label="Skip onboarding">Skip</button>
+      <div class="onboarding-visual" id="onboarding-visual"></div>
+      <p class="eyebrow" id="onboarding-eyebrow">STEP 1 OF 3</p><h2 id="onboarding-title"></h2><p id="onboarding-copy"></p>
+      <div class="onboarding-dots" id="onboarding-dots"></div>
+      <div class="dialog-actions"><button class="secondary-btn hidden" id="onboarding-back">Back</button><button class="primary-action" id="onboarding-next">Next</button></div>
     </div>
   </div>
 
@@ -314,6 +403,12 @@
             Replay
           </button>
         </div>
+        <div class="button-group" style="margin-top: 8px;">
+          <button id="pause-replay-btn" class="secondary-btn" disabled title="Pause before the next action">Pause</button>
+          <button id="resume-replay-btn" class="secondary-btn" disabled title="Continue a paused replay">Resume</button>
+          <button id="step-replay-btn" class="secondary-btn" disabled title="Run one action and pause again">Step</button>
+        </div>
+        <div id="execution-state-label" class="execution-state-label">Idle</div>
       </div>
 
       <div class="panel-section">
@@ -342,6 +437,7 @@
             <option value="webview" selected>In-Browser Replay (fast)</option>
             <option value="playwright">Playwright Executor (evidence-rich)</option>
           </select>
+          <div class="engine-guidance" id="replay-engine-guidance" role="note"></div>
         </div>
         <div class="form-row" style="margin-top: 12px;">
           <div class="form-group">
@@ -366,6 +462,12 @@
           <h5>Recorded Actions</h5>
           <span class="badge">0</span>
         </div>
+        <div class="step-list-toolbar">
+          <input id="step-search-input" class="form-input" type="search" placeholder="Search steps, selectors, or values">
+          <div class="step-filters" id="step-filters" role="group" aria-label="Filter steps">
+            <button class="active" data-step-filter="all">All</button><button data-step-filter="passed">Passed</button><button data-step-filter="failed">Failed</button><button data-step-filter="healed">Healed</button><button data-step-filter="skipped">Skipped</button><button data-step-filter="disabled">Disabled</button>
+          </div>
+        </div>
         <div id="actions-list" class="actions-list">
           <div class="empty-state">
             <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -376,7 +478,108 @@
             <span>Click "Start Recording" to begin</span>
           </div>
         </div>
+        <div class="step-editor-footer">
+          <button id="add-assertion-btn" class="secondary-btn full-width">+ Add Assertion</button>
+        </div>
       </div>
+
+      <div id="step-properties-card" class="panel-card step-properties-card" style="display: none;">
+        <div class="card-header">
+          <h5 id="step-properties-title">Step Properties</h5>
+          <button id="close-step-editor-btn" class="action-icon-btn" title="Close editor">×</button>
+        </div>
+        <div id="step-properties-content" class="card-content"></div>
+      </div>
+
+      <details class="panel-card p1-authoring-card">
+        <summary class="card-header"><h5>Test Data & Environment</h5><span class="badge">P1</span></summary>
+        <div class="card-content">
+          <div class="form-row">
+            <input id="project-variable-name" class="form-input" placeholder="Variable name" />
+            <input id="project-variable-value" class="form-input" placeholder="Value" />
+          </div>
+          <button id="add-project-variable-btn" class="secondary-btn full-width">Add variable</button>
+          <div class="form-group"><label class="form-label">Environment</label>
+            <input id="environment-name" class="form-input" placeholder="e.g. staging" />
+            <input id="environment-base-url" class="form-input" placeholder="https://staging.example.com" />
+          </div>
+          <button id="save-environment-btn" class="secondary-btn full-width">Save environment profile</button>
+          <p class="panel-description">Use <code>{{variableName}}</code> in selectors, values, URLs, and assertions.</p>
+          <div class="form-row">
+            <input id="reusable-flow-name" class="form-input" placeholder="Flow name (login)" />
+            <button id="save-flow-btn" class="secondary-btn">Save current steps</button>
+          </div>
+          <div class="form-row">
+            <select id="hook-name" class="form-select">
+              <option value="beforeAll">Before all</option><option value="beforeEach">Before each</option>
+              <option value="afterEach">After each</option><option value="afterAll">After all</option>
+            </select>
+            <button id="save-hook-btn" class="secondary-btn">Use current steps</button>
+          </div>
+          <pre id="project-summary" class="project-summary">No project data configured.</pre>
+        </div>
+      </details>
+
+      <details class="panel-card p1-authoring-card">
+        <summary class="card-header"><h5>Keyboard Shortcuts</h5><span class="badge">Edit</span></summary>
+        <div class="card-content">
+          <div id="shortcut-reference" class="project-summary">Loading shortcuts…</div>
+          <div class="form-row"><input id="shortcut-command" class="form-input" placeholder="command name">
+            <input id="shortcut-keys" class="form-input" placeholder="Ctrl+Alt+R"></div>
+          <input id="shortcut-description" class="form-input" placeholder="Description">
+          <button id="save-shortcut-btn" class="secondary-btn full-width">Save shortcut</button>
+        </div>
+      </details>
+
+      <details class="panel-card p1-authoring-card">
+        <summary class="card-header"><h5>Suites & Matrix Runs</h5><span class="badge">P2</span></summary>
+        <div class="card-content">
+          <div class="form-row"><input id="suite-name" class="form-input" placeholder="Suite name">
+            <input id="suite-tags" class="form-input" placeholder="Suite tags"></div>
+          <button id="create-suite-btn" class="secondary-btn full-width">Create suite</button>
+          <select id="suite-select" class="form-select"><option value="">Select a suite</option></select>
+          <div class="form-row"><input id="suite-test-name" class="form-input" placeholder="Test name">
+            <input id="suite-test-tags" class="form-input" placeholder="smoke, checkout"></div>
+          <button id="add-suite-test-btn" class="secondary-btn full-width">Add current recording</button>
+          <div class="form-row"><input id="matrix-browsers" class="form-input" value="chrome" placeholder="chrome, msedge">
+            <input id="matrix-concurrency" class="form-input" type="number" min="1" max="32" value="2"></div>
+          <button id="run-suite-matrix-btn" class="primary-btn full-width">Run selected suite matrix</button>
+          <pre id="matrix-run-summary" class="project-summary">No matrix run yet.</pre>
+        </div>
+      </details>
+
+      <details class="panel-card p1-authoring-card">
+        <summary class="card-header"><h5>Generate Test from Language</h5><span class="badge">Review required</span></summary>
+        <div class="card-content">
+          <textarea id="generation-prompt" class="form-input" rows="4" placeholder="Go to https://example.com then click login then verify dashboard is visible"></textarea>
+          <button id="generate-test-btn" class="secondary-btn full-width">Generate draft</button>
+          <pre id="generated-test-preview" class="project-summary">No draft generated.</pre>
+          <div class="button-group"><button id="approve-generated-test-btn" class="primary-btn" disabled>Approve & load</button>
+            <button id="reject-generated-test-btn" class="secondary-btn" disabled>Reject</button></div>
+        </div>
+      </details>
+
+      <details class="panel-card p1-authoring-card">
+        <summary class="card-header"><h5>Headless Schedule</h5><span class="badge">P2</span></summary>
+        <div class="card-content">
+          <div class="form-row"><input id="schedule-name" class="form-input" placeholder="Nightly smoke">
+            <input id="schedule-interval" class="form-input" type="number" min="1" value="1440" title="Interval minutes"></div>
+          <button id="create-schedule-btn" class="secondary-btn full-width">Schedule selected suite</button>
+          <pre id="schedule-summary" class="project-summary">No schedules configured.</pre>
+        </div>
+      </details>
+
+      <details class="panel-card p1-authoring-card">
+        <summary class="card-header"><h5>Healing Policy</h5><span class="badge">P1</span></summary>
+        <div class="card-content">
+          <select id="healing-policy-select" class="form-select">
+            <option value="automatic">Automatic</option><option value="ask">Ask before applying</option>
+            <option value="report-only">Report only</option>
+          </select>
+          <p class="panel-description">Open Shadow DOM is supported. Closed Shadow DOM and inaccessible cross-origin frames cannot be inspected or healed.</p>
+          <pre id="healing-history-summary" class="project-summary">No healing history yet.</pre>
+        </div>
+      </details>
 
       <div class="panel-section">
         <div class="form-group">
@@ -385,8 +588,10 @@
             <option value="playwright">Playwright</option>
             <option value="selenium-js">Selenium (JS)</option>
             <option value="selenium-python">Selenium (Python)</option>
+            <option value="selenium-java">Selenium (Java)</option>
             <option value="cypress">Cypress</option>
             <option value="puppeteer">Puppeteer</option>
+            <option value="cdp">Chrome DevTools Protocol</option>
           </select>
         </div>
         <button id="export-script-btn" class="secondary-btn full-width">
@@ -406,9 +611,10 @@
             <option value="junit">JUnit XML</option>
             <option value="har">HAR</option>
             <option value="allure">Allure</option>
+            <option value="pdf">PDF</option>
           </select>
         </div>
-        <div class="button-group">
+        <div class="report-action-grid">
           <button id="export-report-btn" class="secondary-btn full-width">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
@@ -426,6 +632,7 @@
             </svg>
             All Formats
           </button>
+          <button id="run-history-btn" class="secondary-btn full-width">Run History & Analytics</button>
         </div>
       </div>
     </div>
@@ -452,6 +659,14 @@
           <label class="form-label">CSS Selector</label>
           <input type="text" id="scraper-selector" class="form-input" placeholder="e.g., table, .product-list, #data-grid" />
         </div>
+        <div class="form-group"><label class="form-label">Field mapping</label>
+          <textarea id="scraper-fields" class="form-input" rows="3" placeholder="name=.title&#10;price=.price"></textarea>
+        </div>
+        <div class="form-row">
+          <input id="scraper-next-selector" class="form-input" placeholder="Next button selector" />
+          <input id="scraper-max-pages" class="form-input" type="number" min="1" value="1" title="Maximum pages" />
+        </div>
+        <label class="form-label"><input id="scraper-infinite-scroll" type="checkbox"> Infinite scroll</label>
         <button id="start-scrape-btn" class="primary-btn full-width">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
@@ -488,11 +703,42 @@
             </svg>
             Export CSV
           </button>
+          <button id="export-excel-btn" class="secondary-btn full-width">Export Excel</button>
+          <button id="cancel-scrape-btn" class="secondary-btn full-width">Cancel</button>
         <button id="export-json-btn" class="secondary-btn">Export as JSON</button>
       </div>
     </div>
   </template>
 
+  <template id="plugins-panel-template">
+    <div class="tool-panel">
+      <div class="panel-card appearance-settings">
+        <div class="card-header"><h5>Appearance & accessibility</h5><span class="badge">UI</span></div>
+        <div class="card-content">
+          <div class="form-group"><label class="form-label" for="ui-density-select">Interface density</label><select id="ui-density-select" class="form-select"><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></div>
+          <label class="preference-row"><span><strong>Reduce motion</strong><small>Limit transitions and animated status indicators</small></span><input id="ui-reduce-motion" type="checkbox"></label>
+          <label class="preference-row"><span><strong>Low-performance mode</strong><small>Disable blur, shadows, and costly visual effects</small></span><input id="ui-low-performance" type="checkbox"></label>
+        </div>
+      </div>
+      <div class="panel-section"><h4 class="panel-heading">Plugin Manager</h4>
+        <p class="panel-description">Install sandboxed Chromation extensions. Review every requested permission before activation.</p></div>
+      <div class="panel-card"><div class="card-header"><h5>Installed plugins</h5><span id="plugin-count" class="badge">0</span></div>
+        <div id="installed-plugin-list" class="card-content"><p class="hint">No plugins installed.</p></div></div>
+      <details class="panel-card p1-authoring-card"><summary class="card-header"><h5>Install development bundle</h5></summary>
+        <div class="card-content">
+          <label class="form-label">Manifest JSON</label>
+          <textarea id="plugin-manifest-json" class="form-input" rows="8" placeholder='{"id":"company.plugin","name":"Plugin","version":"1.0.0","apiVersion":"1.0.0","permissions":[]}'></textarea>
+          <label class="form-label">Plugin source</label>
+          <textarea id="plugin-source-code" class="form-input" rows="10" placeholder="function activate(chromation) { }"></textarea>
+          <label class="form-label"><input id="approve-plugin-permissions" type="checkbox"> I reviewed and approve all permissions requested by this manifest</label>
+          <button id="install-plugin-btn" class="primary-btn full-width">Install plugin</button>
+          <div id="plugin-install-error" class="step-editor-error"></div>
+        </div>
+      </details>
+    </div>
+  </template>
+
+  <script src="report-workspace.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

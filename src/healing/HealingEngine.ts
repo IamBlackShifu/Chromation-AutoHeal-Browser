@@ -33,25 +33,33 @@ export interface HealingResult {
   timestamp: number;
   scoreBreakdown: HealingScoreBreakdown;
   alternatives: Array<{ selector: string; confidence: number }>;
+  approved?: boolean;
+  applied?: boolean;
+  policy?: HealingApprovalPolicy;
 }
 
+export type HealingApprovalPolicy = 'automatic' | 'ask' | 'report-only';
 export interface HealingOptions {
   confidenceThreshold?: number;
   ambiguityMargin?: number;
   maxCandidates?: number;
+  approvalPolicy?: HealingApprovalPolicy;
 }
 
 export class HealingEngine {
   private healingEnabled = true;
   private healingHistory: HealingResult[] = [];
-  private readonly confidenceThreshold: number;
+  private confidenceThreshold: number;
   private readonly ambiguityMargin: number;
   private readonly maxCandidates: number;
+  private approvalPolicy: HealingApprovalPolicy;
+  private approvedLocators = new Map<string, string>();
 
   constructor(options: HealingOptions = {}) {
     this.confidenceThreshold = options.confidenceThreshold ?? 0.68;
     this.ambiguityMargin = options.ambiguityMargin ?? 0.08;
     this.maxCandidates = options.maxCandidates ?? 250;
+    this.approvalPolicy = options.approvalPolicy ?? 'automatic';
   }
 
   enable(): void {
@@ -123,9 +131,27 @@ export class HealingEngine {
       return null;
     }
 
+    const approvedSelector = this.approvedLocators.get(brokenSelector);
+    if (approvedSelector && (await page.locator(approvedSelector).count()) === 1) {
+      const approved: HealingResult = {
+        originalSelector: brokenSelector, healedSelector: approvedSelector, confidence: 1,
+        strategy: 'previously-approved', timestamp: Date.now(),
+        scoreBreakdown: { attributes: 1, text: 1, semantics: 1, hierarchy: 1, position: 1 },
+        alternatives: [], approved: true, applied: true, policy: this.approvalPolicy,
+      };
+      this.healingHistory.push(approved);
+      return approved;
+    }
+
     const liveCandidates = await this.collectCandidates(page);
-    const candidates = liveCandidates
-      .map((candidate) => this.scoreCandidate(original, candidate))
+    const scored = liveCandidates.map((candidate) => this.scoreCandidate(original, candidate));
+    const deterministic = scored.filter((candidate) =>
+      candidate.scoreBreakdown.attributes >= 0.5 ||
+      candidate.scoreBreakdown.text >= 0.8 ||
+      candidate.scoreBreakdown.semantics >= 0.8
+    );
+    const usedVisualFallback = deterministic.length === 0;
+    const candidates = (usedVisualFallback ? scored : deterministic)
       .sort((left, right) => right.confidence - left.confidence);
     const best = candidates[0];
     const runnerUp = candidates[1];
@@ -146,13 +172,16 @@ export class HealingEngine {
       originalSelector: brokenSelector,
       healedSelector: best.selector,
       confidence: best.confidence,
-      strategy: 'fingerprint-similarity',
+      strategy: usedVisualFallback ? 'geometry-similarity-fallback' : 'deterministic-fingerprint',
       timestamp: Date.now(),
       scoreBreakdown: best.scoreBreakdown,
       alternatives: candidates.slice(1, 4).map(({ selector, confidence }) => ({
         selector,
         confidence,
       })),
+      approved: this.approvalPolicy === 'automatic',
+      applied: this.approvalPolicy === 'automatic',
+      policy: this.approvalPolicy,
     };
 
     this.healingHistory.push(result);
@@ -169,6 +198,36 @@ export class HealingEngine {
 
   isEnabled(): boolean {
     return this.healingEnabled;
+  }
+
+  setApprovalPolicy(policy: HealingApprovalPolicy): void { this.approvalPolicy = policy; }
+  getApprovalPolicy(): HealingApprovalPolicy { return this.approvalPolicy; }
+  setConfidenceThreshold(value: number): void {
+    if (!Number.isFinite(value) || value < 0 || value > 1) throw new Error('Confidence threshold must be between 0 and 1');
+    this.confidenceThreshold = value;
+  }
+  approve(result: HealingResult): HealingResult {
+    this.approvedLocators.set(result.originalSelector, result.healedSelector);
+    result.approved = true;
+    result.applied = true;
+    return result;
+  }
+  reject(result: HealingResult): HealingResult {
+    result.approved = false;
+    result.applied = false;
+    return result;
+  }
+  getApprovedLocators(): Record<string, string> { return Object.fromEntries(this.approvedLocators); }
+  compareHistory(): Array<{ selector: string; attempts: number; averageConfidence: number; latest?: HealingResult }> {
+    const groups = new Map<string, HealingResult[]>();
+    for (const result of this.healingHistory) {
+      groups.set(result.originalSelector, [...(groups.get(result.originalSelector) ?? []), result]);
+    }
+    return [...groups.entries()].map(([selector, results]) => ({
+      selector, attempts: results.length,
+      averageConfidence: results.reduce((sum, item) => sum + item.confidence, 0) / results.length,
+      latest: results.at(-1),
+    }));
   }
 
   private async collectCandidates(page: Page): Promise<Array<{ selector: string; fingerprint: LocatorFingerprint }>> {

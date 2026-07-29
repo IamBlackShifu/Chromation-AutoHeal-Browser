@@ -12,7 +12,15 @@ import { HealingEngine } from './healing/HealingEngine';
 import { ScraperStudio } from './scraper/ScraperStudio';
 import { ExecutionReport, Reporter } from './reporter/Reporter';
 import { ScriptExecutor } from './executor/ScriptExecutor';
-import type { ExecutionOptions, ExecutionResult } from './executor/types';
+import { TestProject } from './project/TestProject';
+import { ShortcutManager } from './ui/ShortcutManager';
+import { SuiteFilter, SuiteManager } from './suite/SuiteManager';
+import { MatrixRunner, MatrixRunResult, MatrixValue } from './executor/MatrixRunner';
+import { AdvancedPageTesting, VisualRegressionService } from './advanced/AdvancedTesting';
+import { ReviewedTestGenerator } from './advanced/TestGeneration';
+import { RunScheduler } from './advanced/Scheduling';
+import { PluginManager } from './plugins/PluginSDK';
+import type { ExecutionOptions, ExecutionResult, ExecutionStateSnapshot } from './executor/types';
 
 export class ChromationBrowser {
   private browserCore: BrowserCore;
@@ -22,6 +30,13 @@ export class ChromationBrowser {
   private scraperStudio: ScraperStudio;
   private reporter: Reporter;
   private scriptExecutor: ScriptExecutor;
+  private testProject: TestProject;
+  private shortcutManager: ShortcutManager;
+  private suiteManager: SuiteManager;
+  private visualRegression: VisualRegressionService;
+  private testGenerator: ReviewedTestGenerator;
+  private runScheduler: RunScheduler;
+  private pluginManager: PluginManager;
 
   constructor() {
     this.browserCore = new BrowserCore();
@@ -30,7 +45,16 @@ export class ChromationBrowser {
     this.healingEngine = new HealingEngine();
     this.scraperStudio = new ScraperStudio();
     this.reporter = new Reporter();
-    this.scriptExecutor = new ScriptExecutor();
+    this.pluginManager = new PluginManager();
+    this.visualRegression = new VisualRegressionService();
+    this.scriptExecutor = new ScriptExecutor(
+      undefined, undefined, new AdvancedPageTesting(), this.visualRegression, this.pluginManager
+    );
+    this.testProject = new TestProject();
+    this.shortcutManager = new ShortcutManager();
+    this.suiteManager = new SuiteManager();
+    this.testGenerator = new ReviewedTestGenerator();
+    this.runScheduler = new RunScheduler();
   }
 
   async initialize(): Promise<void> {
@@ -70,6 +94,37 @@ export class ChromationBrowser {
     return this.scriptExecutor;
   }
 
+  getTestProject(): TestProject {
+    return this.testProject;
+  }
+
+  getShortcutManager(): ShortcutManager { return this.shortcutManager; }
+  getSuiteManager(): SuiteManager { return this.suiteManager; }
+  getVisualRegressionService(): VisualRegressionService { return this.visualRegression; }
+  getTestGenerator(): ReviewedTestGenerator { return this.testGenerator; }
+  getRunScheduler(): RunScheduler { return this.runScheduler; }
+  getPluginManager(): PluginManager { return this.pluginManager; }
+
+  cancelExecution(reason?: string): boolean {
+    return this.scriptExecutor.cancel(reason);
+  }
+
+  pauseExecution(): boolean {
+    return this.scriptExecutor.pause();
+  }
+
+  resumeExecution(): boolean {
+    return this.scriptExecutor.resume();
+  }
+
+  stepExecution(): boolean {
+    return this.scriptExecutor.step();
+  }
+
+  getExecutionState(): ExecutionStateSnapshot {
+    return this.scriptExecutor.getState();
+  }
+
   async executeRecordedActions(options?: ExecutionOptions): Promise<ExecutionResult> {
     return this.scriptExecutor.execute(this.recorder.getActions(), options);
   }
@@ -80,12 +135,52 @@ export class ChromationBrowser {
   ): Promise<{ execution: ExecutionResult; report: ExecutionReport }> {
     const execution = await this.executeRecordedActions(options);
     const report = this.reporter.fromExecutionResult(testName, execution);
+    await this.pluginManager.emit('report:complete', report);
     return { execution, report };
+  }
+
+  async executeSuiteMatrix(
+    filter: SuiteFilter,
+    matrix: Record<string, MatrixValue[]>,
+    maxConcurrency = 2,
+    options?: ExecutionOptions
+  ): Promise<MatrixRunResult> {
+    const selected = this.suiteManager.filter({ ...filter, enabledOnly: true });
+    const runner = new MatrixRunner(async (job) => {
+      const executor = new ScriptExecutor(undefined, undefined, undefined, undefined, this.pluginManager);
+      return executor.execute(job.actions, { ...options, ...job.options });
+    });
+    const jobs = runner.expand(selected.map(({ test }) => ({
+      id: test.id, name: test.name, actions: test.actions,
+      options: { ...options, baseUrl: options?.baseUrl },
+    })), matrix);
+    return runner.run(jobs, maxConcurrency);
   }
 }
 
 export { ScriptExecutor } from './executor/ScriptExecutor';
-export type { ExecutionOptions, ExecutionResult } from './executor/types';
+export { TestProject } from './project/TestProject';
+export { RunHistoryStore } from './reporter/RunHistoryStore';
+export { ShortcutManager } from './ui/ShortcutManager';
+export { SuiteManager } from './suite/SuiteManager';
+export { MatrixRunner } from './executor/MatrixRunner';
+export { AdvancedPageTesting, VisualRegressionService, ResultArtifactStore } from './advanced/AdvancedTesting';
+export { ReviewedTestGenerator } from './advanced/TestGeneration';
+export { RunScheduler } from './advanced/Scheduling';
+export { RemoteWorkerCoordinator, CIResultSynchronizer } from './advanced/RemoteExecution';
+export {
+  PluginManager, validatePluginManifest, validatePluginConfiguration,
+  CHROMATION_PLUGIN_API_VERSION,
+} from './plugins/PluginSDK';
+export type {
+  PluginManifest, PluginPermission, PluginBundle, PluginRecord, PluginExtension,
+} from './plugins/PluginSDK';
+export type {
+  ExecutionOptions,
+  ExecutionResult,
+  ExecutionState,
+  ExecutionStateSnapshot,
+} from './executor/types';
 
 // Export main entry point
 export default ChromationBrowser;

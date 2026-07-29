@@ -6,6 +6,13 @@
 
 Chromation AutoHeal Browser is a Chromium-engine-based automation browser purpose-built for QA Engineers, SDETs, and Automation Developers. It combines traditional browsing with deeply embedded automation tooling.
 
+> Development status: this is an active MVP. Verified behavior and remaining
+> work are tracked in [PENDING_CHECKLIST.md](PENDING_CHECKLIST.md), with runtime
+> support defined in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md). Features
+> marked pending in the checklist are not production-ready. The latest
+> evidence-based reliability and product audit is in
+> [docs/ROBUSTNESS_UX_AUDIT_CHECKLIST.md](docs/ROBUSTNESS_UX_AUDIT_CHECKLIST.md).
+
 ## Features
 
 ### 🔍 Smart Element Inspection
@@ -211,6 +218,9 @@ npm run dev
 - **Automation APIs**: Puppeteer, Playwright integration
 
 ## Roadmap
+
+For the prioritized, testable implementation backlog and UI modernization
+phases, see [PENDING_CHECKLIST.md](PENDING_CHECKLIST.md).
 
 ### MVP (Current)
 - ✅ Core architecture and module stubs
