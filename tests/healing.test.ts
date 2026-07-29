@@ -1,59 +1,114 @@
-import { HealingEngine, HealingResult } from '../src/healing/HealingEngine';
+import type { Page } from 'playwright-core';
+import { HealingEngine, LocatorFingerprint } from '../src/healing/HealingEngine';
+
+const original: LocatorFingerprint = {
+  tagName: 'button',
+  attributes: { id: 'save-button', type: 'submit' },
+  text: 'Save changes',
+  accessibleName: 'Save changes',
+  role: 'button',
+  domPath: ['main', 'form', 'button'],
+  boundingBox: { x: 100, y: 200, width: 120, height: 32 },
+};
+
+function pageWithCandidates(candidates: unknown[], selectorCount = 1): Page {
+  return {
+    evaluate: jest.fn().mockResolvedValue(candidates),
+    locator: jest.fn().mockReturnValue({
+      count: jest.fn().mockResolvedValue(selectorCount),
+    }),
+  } as unknown as Page;
+}
 
 describe('HealingEngine', () => {
-  let healingEngine: HealingEngine;
+  test('captures a locator fingerprint from the live element', async () => {
+    const evaluate = jest.fn().mockResolvedValue(original);
+    const page = {
+      locator: jest.fn().mockReturnValue({
+        first: jest.fn().mockReturnValue({ evaluate }),
+      }),
+    } as unknown as Page;
 
-  beforeEach(() => {
-    healingEngine = new HealingEngine();
+    const fingerprint = await new HealingEngine().captureFingerprint(page, '#save');
+
+    expect(fingerprint).toEqual(original);
+    expect(page.locator).toHaveBeenCalledWith('#save');
   });
 
-  test('should initialize correctly', () => {
-    expect(healingEngine).toBeDefined();
-    expect(healingEngine.isEnabled()).toBe(true);
+  test('detects missing and malformed locators', async () => {
+    const existing = pageWithCandidates([], 1);
+    const missing = pageWithCandidates([], 0);
+    const malformed = {
+      locator: jest.fn().mockImplementation(() => {
+        throw new Error('Invalid selector');
+      }),
+    } as unknown as Page;
+
+    const engine = new HealingEngine();
+    await expect(engine.detectBrokenLocator('#save', existing)).resolves.toBe(false);
+    await expect(engine.detectBrokenLocator('#missing', missing)).resolves.toBe(true);
+    await expect(engine.detectBrokenLocator('???', malformed)).resolves.toBe(true);
   });
 
-  test('should enable and disable healing', () => {
-    healingEngine.disable();
-    expect(healingEngine.isEnabled()).toBe(false);
+  test('heals to a unique high-confidence candidate and records evidence', async () => {
+    const page = pageWithCandidates([
+      {
+        selector: '[data-testid="save"]',
+        fingerprint: {
+          ...original,
+          attributes: { 'data-testid': 'save', type: 'submit' },
+        },
+      },
+      {
+        selector: '#cancel',
+        fingerprint: {
+          tagName: 'button',
+          attributes: { id: 'cancel' },
+          text: 'Cancel',
+          domPath: ['footer', 'button'],
+          boundingBox: { x: 700, y: 700, width: 80, height: 32 },
+        },
+      },
+    ]);
+    const engine = new HealingEngine({ confidenceThreshold: 0.5 });
 
-    healingEngine.enable();
-    expect(healingEngine.isEnabled()).toBe(true);
+    const result = await engine.healLocator('#old-save', page, original);
+
+    expect(result?.healedSelector).toBe('[data-testid="save"]');
+    expect(result?.confidence).toBeGreaterThan(0.5);
+    expect(result?.scoreBreakdown).toBeDefined();
+    expect(engine.getHealingHistory()).toHaveLength(1);
   });
 
-  test('should detect broken locators', async () => {
-    const isBroken = await healingEngine.detectBrokenLocator('#non-existent');
-    expect(typeof isBroken).toBe('boolean');
+  test('rejects ambiguous candidates instead of guessing', async () => {
+    const page = pageWithCandidates([
+      { selector: '#save-one', fingerprint: original },
+      { selector: '#save-two', fingerprint: original },
+    ]);
+    const engine = new HealingEngine();
+
+    await expect(engine.healLocator('#old-save', page, original)).resolves.toBeNull();
+    expect(engine.getHealingHistory()).toHaveLength(0);
   });
 
-  test('should attempt to heal locator', async () => {
-    const result = await healingEngine.healLocator('#broken-selector', {});
-    
-    expect(result).toBeDefined();
-    if (result) {
-      expect(result.originalSelector).toBe('#broken-selector');
-      expect(result.confidence).toBeGreaterThanOrEqual(0);
-    }
+  test('does not heal while disabled', async () => {
+    const engine = new HealingEngine();
+    engine.disable();
+
+    await expect(engine.healLocator('#old-save', pageWithCandidates([]), original)).resolves.toBeNull();
+    expect(engine.isEnabled()).toBe(false);
+    engine.enable();
+    expect(engine.isEnabled()).toBe(true);
   });
 
-  test('should not heal when disabled', async () => {
-    healingEngine.disable();
-    const result = await healingEngine.healLocator('#broken', {});
-    expect(result).toBeNull();
-  });
-
-  test('should track healing history', async () => {
-    await healingEngine.healLocator('#selector1', {});
-    await healingEngine.healLocator('#selector2', {});
-    
-    const history = healingEngine.getHealingHistory();
-    expect(history).toHaveLength(2);
-  });
-
-  test('should clear history', async () => {
-    await healingEngine.healLocator('#selector', {});
-    healingEngine.clearHistory();
-    
-    const history = healingEngine.getHealingHistory();
-    expect(history).toHaveLength(0);
+  test('clears healing history', async () => {
+    const engine = new HealingEngine({ confidenceThreshold: 0.5 });
+    await engine.healLocator(
+      '#old-save',
+      pageWithCandidates([{ selector: '#save', fingerprint: original }]),
+      original
+    );
+    engine.clearHistory();
+    expect(engine.getHealingHistory()).toEqual([]);
   });
 });

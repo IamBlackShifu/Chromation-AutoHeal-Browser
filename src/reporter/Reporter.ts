@@ -5,7 +5,8 @@
  * Supports HTML, PDF, JSON, JUnit XML, HAR, and Allure-compatible formats
  */
 
-import { ExecutionResult } from '../executor/types';
+import { ExecutionResult, NetworkEntry } from '../executor/types';
+import type { HealingResult } from '../healing/HealingEngine';
 
 export type ReportFormat = 'html' | 'pdf' | 'json' | 'junit' | 'har' | 'allure';
 
@@ -16,6 +17,7 @@ export interface TestStep {
   screenshot?: string;
   error?: string;
   healedLocators?: string[];
+  healing?: HealingResult;
 }
 
 export interface ExecutionReport {
@@ -28,12 +30,13 @@ export interface ExecutionReport {
   steps: TestStep[];
   screenshots: string[];
   healingEvents: number;
+  healingDetails?: HealingResult[];
   consoleLogs?: string[];
   environment?: {
     runtime: string;
     headless?: boolean;
   };
-  networkLogs?: any[];
+  networkLogs?: NetworkEntry[];
   performanceMetrics?: Record<string, number>;
 }
 
@@ -123,7 +126,7 @@ export class Reporter {
   }
 
   private generateHTMLReport(report: ExecutionReport): string {
-    // TODO: Generate rich HTML report with styling
+    const healingDetails = report.healingDetails ?? [];
     return `
 <!DOCTYPE html>
 <html>
@@ -134,22 +137,37 @@ export class Reporter {
     .passed { color: green; }
     .failed { color: red; }
     .summary { background: #f0f0f0; padding: 15px; border-radius: 5px; }
+    .healing { background: #fff8e1; border-left: 4px solid #f9ab00; margin: 8px 0; padding: 10px; }
+    code { overflow-wrap: anywhere; }
   </style>
 </head>
 <body>
-  <h1>Test Report: ${report.testName}</h1>
+  <h1>Test Report: ${this.escapeHTML(report.testName)}</h1>
   <div class="summary">
     <p>Status: <span class="${report.status}">${report.status.toUpperCase()}</span></p>
     <p>Duration: ${report.duration}ms</p>
     <p>Steps: ${report.steps.length}</p>
     <p>Healing Events: ${report.healingEvents}</p>
   </div>
+  ${healingDetails.length > 0 ? `
+  <h2>Healing Events</h2>
+  ${healingDetails.map((healing) => `
+    <div class="healing">
+      <strong>${Math.round(healing.confidence * 100)}% confidence</strong><br>
+      <code>${this.escapeHTML(healing.originalSelector)}</code>
+      &rarr;
+      <code>${this.escapeHTML(healing.healedSelector)}</code><br>
+      <small>Strategy: ${this.escapeHTML(healing.strategy)}</small>
+    </div>
+  `).join('')}
+  ` : ''}
   <h2>Steps</h2>
   <ul>
     ${report.steps.map(step => `
       <li class="${step.status}">
-        ${step.name} - ${step.status} (${step.duration}ms)
-        ${step.error ? `<br><em>Error: ${step.error}</em>` : ''}
+        ${this.escapeHTML(step.name)} - ${step.status} (${step.duration}ms)
+        ${step.error ? `<br><em>Error: ${this.escapeHTML(step.error)}</em>` : ''}
+        ${step.healing ? `<br><em>Healed to ${this.escapeHTML(step.healing.healedSelector)} (${Math.round(step.healing.confidence * 100)}%)</em>` : ''}
       </li>
     `).join('')}
   </ul>
@@ -177,7 +195,7 @@ export class Reporter {
 
   private generateHARReport(report: ExecutionReport): string {
     const startedDateTime = new Date(report.startTime).toISOString();
-    const entries = (report.networkLogs || []).map((entry: any) => ({
+    const entries = (report.networkLogs || []).map((entry) => ({
       startedDateTime: new Date(entry.timestamp || report.startTime).toISOString(),
       time: 0,
       request: {
@@ -292,11 +310,18 @@ export class Reporter {
         duration: step.durationMs,
         screenshot: step.evidence?.screenshotBase64,
         error: step.error,
+        healing: step.healing,
+        healedLocators: step.healing
+          ? [`${step.healing.originalSelector} -> ${step.healing.healedSelector}`]
+          : undefined,
       })),
       screenshots: execution.steps
         .map((step) => step.evidence?.screenshotBase64)
         .filter((value): value is string => Boolean(value)),
-      healingEvents: 0,
+      healingEvents: execution.steps.filter((step) => Boolean(step.healing)).length,
+      healingDetails: execution.steps
+        .map((step) => step.healing)
+        .filter((healing): healing is HealingResult => Boolean(healing)),
       consoleLogs: execution.consoleLogs,
       networkLogs: execution.networkSummary,
       environment: {
@@ -315,5 +340,15 @@ export class Reporter {
   clearHistory(): void {
     this.reportHistory = [];
     console.log('Report history cleared');
+  }
+
+  private escapeHTML(value: string): string {
+    return value.replace(/[&<>"']/g, (character) => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;',
+    })[character] ?? character);
   }
 }

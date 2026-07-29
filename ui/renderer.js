@@ -3,10 +3,7 @@
  * Handles UI interactions and communication with main process
  */
 
-const { ipcRenderer } = require('electron');
-
-// Import the Chromation modules
-const ChromationBrowser = require('../dist/index.js').default;
+const ipcRenderer = window.chromationAPI.ipc;
 
 // Initialize the browser engine
 let chromationBrowser;
@@ -14,6 +11,36 @@ let inspector, recorder, healingEngine, scraperStudio, reporter;
 let isRecording = false;
 let isInspecting = false;
 let recordedActions = [];
+let uploadSelectionInProgress = false;
+
+function normalizeRecordedActions(actions) {
+  if (!Array.isArray(actions)) return [];
+
+  return actions
+    .filter((action) => action && typeof action.type === 'string')
+    .map((action) => ({
+      ...action,
+      selector: typeof action.selector === 'string' ? action.selector : '',
+      timestamp: Number.isFinite(action.timestamp) ? action.timestamp : Date.now(),
+      locatorFingerprint:
+        action.locatorFingerprint &&
+        typeof action.locatorFingerprint.tagName === 'string' &&
+        action.locatorFingerprint.attributes &&
+        typeof action.locatorFingerprint.attributes === 'object'
+          ? action.locatorFingerprint
+          : undefined,
+    }));
+}
+
+function escapeReportText(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (character) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  })[character]);
+}
 
 // DOM elements
 const urlInput = document.getElementById('url-input');
@@ -32,20 +59,49 @@ const btnForward = document.getElementById('btn-forward');
 const btnRefresh = document.getElementById('btn-refresh');
 const btnHome = document.getElementById('btn-home');
 
+document.addEventListener('click', (event) => {
+  const external = event.target.closest('[data-external-url]');
+  if (external) {
+    window.chromationAPI.openExternal(external.dataset.externalUrl);
+    return;
+  }
+  const reportExport = event.target.closest('[data-report-format]');
+  if (reportExport) {
+    exportReplayReport(reportExport.dataset.reportFormat);
+    return;
+  }
+  const tool = event.target.closest('[data-open-tool]');
+  if (tool) {
+    toggleTool(tool.dataset.openTool);
+  }
+});
+
 // Tool buttons (now in menu)
 const btnClosePanel = document.getElementById('btn-close-panel');
 
 // Initialize Chromation Browser
 async function initChromation() {
   try {
-    chromationBrowser = new ChromationBrowser();
+    chromationBrowser = window.chromationAPI;
     await chromationBrowser.initialize();
     
-    inspector = chromationBrowser.getInspector();
-    recorder = chromationBrowser.getRecorder();
-    healingEngine = chromationBrowser.getHealingEngine();
-    scraperStudio = chromationBrowser.getScraperStudio();
-    reporter = chromationBrowser.getReporter();
+    inspector = {
+      startInspection: chromationBrowser.inspector.start,
+      stopInspection: chromationBrowser.inspector.stop,
+    };
+    recorder = {
+      startRecording: chromationBrowser.recorder.start,
+      stopRecording: chromationBrowser.recorder.stop,
+      recordAction: chromationBrowser.recorder.record,
+      getActions: chromationBrowser.recorder.getActions,
+      updateLastAction: chromationBrowser.recorder.updateLastAction,
+      setActions: chromationBrowser.recorder.setActions,
+      exportScript: chromationBrowser.recorder.exportScript,
+      clearActions: chromationBrowser.recorder.clear,
+    };
+    healingEngine = chromationBrowser.healing;
+    scraperStudio = chromationBrowser.scraper;
+    reporter = chromationBrowser.reporter;
     
     statusText.textContent = 'Ready';
     console.log('Chromation modules initialized');
@@ -906,11 +962,25 @@ function injectRecordingScript() {
   try {
     browserWebview.executeJavaScript(`
       (function() {
-        if (window.__chromationRecording) return; // Already injected
+        if (window.__chromationRecorderInstalled) {
+          window.__chromationRecording = true;
+          return;
+        }
+        window.__chromationRecorderInstalled = true;
         window.__chromationRecording = true;
         
         function cssEscape(value) {
-          return String(value || '').replace(/([\\.#:[\],>+~*^$|=\"'()])/g, '\\$1');
+          const normalized = String(value || '');
+          return window.CSS && typeof window.CSS.escape === 'function'
+            ? window.CSS.escape(normalized)
+            : normalized.replace(/[^a-zA-Z0-9_-]/g, function(character) {
+                return '\\\\' + character;
+              });
+        }
+
+        function isGeneratedId(id) {
+          return /^(react-aria|html5_|ember|vue-|id_\\d+|\\d+$)/i.test(String(id || '')) ||
+            /[a-f0-9]{12,}/i.test(String(id || ''));
         }
 
         // Build a deterministic CSS path so replay targets the exact recorded element.
@@ -922,7 +992,7 @@ function injectRecordingScript() {
           while (current && current.nodeType === Node.ELEMENT_NODE && current.tagName.toLowerCase() !== 'html') {
             let segment = current.tagName.toLowerCase();
 
-            if (current.id) {
+            if (current.id && !isGeneratedId(current.id)) {
               segment += '#' + cssEscape(current.id);
               segments.unshift(segment);
               break;
@@ -944,13 +1014,6 @@ function injectRecordingScript() {
         // Helper to get best selector
         function getBestSelector(element) {
           if (!element) return '';
-
-          if (element.id) {
-            const idSelector = '#' + cssEscape(element.id);
-            if (document.querySelectorAll(idSelector).length === 1) {
-              return idSelector;
-            }
-          }
 
           if (element.getAttribute('data-testid')) {
             const selector = '[data-testid="' + cssEscape(element.getAttribute('data-testid')) + '"]';
@@ -1007,7 +1070,55 @@ function injectRecordingScript() {
           return '/' + parts.join('/');
         }
 
-        function emitRecord(payload) {
+        function captureFingerprint(element) {
+          if (!element || element.nodeType !== Node.ELEMENT_NODE) return undefined;
+          const attributes = {};
+          ['id', 'name', 'type', 'placeholder', 'title', 'aria-label', 'data-testid', 'data-test', 'data-qa']
+            .forEach(function(name) {
+              const value = element.getAttribute(name);
+              if (value) attributes[name] = value;
+            });
+          const domPath = [];
+          let current = element;
+          while (current && current.nodeType === Node.ELEMENT_NODE && domPath.length < 8) {
+            domPath.unshift(current.tagName.toLowerCase());
+            current = current.parentElement;
+          }
+
+          if (element.getAttribute('data-qa')) {
+            const selector = '[data-qa="' + cssEscape(element.getAttribute('data-qa')) + '"]';
+            if (document.querySelectorAll(selector).length === 1) {
+              return selector;
+            }
+          }
+
+          if (element.id && !isGeneratedId(element.id)) {
+            const idSelector = '#' + cssEscape(element.id);
+            if (document.querySelectorAll(idSelector).length === 1) {
+              return idSelector;
+            }
+          }
+          const rect = element.getBoundingClientRect();
+          return {
+            tagName: element.tagName.toLowerCase(),
+            attributes: attributes,
+            text: (element.textContent || '').trim().replace(/\\s+/g, ' ').substring(0, 160),
+            accessibleName: element.getAttribute('aria-label') || undefined,
+            role: element.getAttribute('role') || undefined,
+            domPath: domPath,
+            boundingBox: {
+              x: rect.x,
+              y: rect.y,
+              width: rect.width,
+              height: rect.height
+            }
+          };
+        }
+
+        function emitRecord(payload, element) {
+          if (element) {
+            payload.locatorFingerprint = captureFingerprint(element);
+          }
           console.log('CHROMATION_RECORD_JSON:' + JSON.stringify(payload));
         }
         
@@ -1052,6 +1163,27 @@ function injectRecordingScript() {
         // Capture clicks with full context
         document.addEventListener('click', function(e) {
           const element = e.target;
+          if (
+            !window.__chromationRecording ||
+            !element ||
+            element.tagName !== 'INPUT' ||
+            element.type !== 'file'
+          ) {
+            return;
+          }
+
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          console.log('CHROMATION_FILE_REQUEST_JSON:' + JSON.stringify({
+            selector: getBestSelector(element),
+            xpath: getXPath(element),
+            multiple: Boolean(element.multiple),
+            locatorFingerprint: captureFingerprint(element)
+          }));
+        }, true);
+
+        document.addEventListener('click', function(e) {
+          const element = e.target;
           const selector = getBestSelector(element);
           const xpath = getXPath(element);
           const text = getElementText(element);
@@ -1063,28 +1195,29 @@ function injectRecordingScript() {
             value: text,
             extra: tag,
             xpath: xpath,
-          });
+          }, element);
         }, true);
         
         // Capture right clicks
         document.addEventListener('contextmenu', function(e) {
           const selector = getBestSelector(e.target);
-          emitRecord({ actionType: 'rightclick', selector: selector, value: getElementText(e.target), extra: '', xpath: getXPath(e.target) });
+          emitRecord({ actionType: 'rightclick', selector: selector, value: getElementText(e.target), extra: '', xpath: getXPath(e.target) }, e.target);
         }, true);
         
         // Capture double clicks
         document.addEventListener('dblclick', function(e) {
           const selector = getBestSelector(e.target);
-          emitRecord({ actionType: 'doubleclick', selector: selector, value: getElementText(e.target), extra: '', xpath: getXPath(e.target) });
+          emitRecord({ actionType: 'doubleclick', selector: selector, value: getElementText(e.target), extra: '', xpath: getXPath(e.target) }, e.target);
         }, true);
         
         // Capture input changes with keystroke info
         document.addEventListener('input', function(e) {
           if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+            if (e.target.type === 'file') return;
             const selector = getBestSelector(e.target);
             const value = e.target.value;
             const inputType = e.target.type || 'text';
-            emitRecord({ actionType: 'input', selector: selector, value: value, extra: inputType, xpath: getXPath(e.target) });
+            emitRecord({ actionType: 'input', selector: selector, value: value, extra: inputType, xpath: getXPath(e.target) }, e.target);
           }
         }, true);
         
@@ -1101,7 +1234,7 @@ function injectRecordingScript() {
             if (e.metaKey) modifiers.push('meta');
             if (e.shiftKey) modifiers.push('shift');
             
-            emitRecord({ actionType: 'keypress', selector: selector, value: key, extra: modifiers.join('+'), xpath: getXPath(e.target) });
+            emitRecord({ actionType: 'keypress', selector: selector, value: key, extra: modifiers.join('+'), xpath: getXPath(e.target) }, e.target);
           }
         }, true);
         
@@ -1111,27 +1244,27 @@ function injectRecordingScript() {
             const selector = getBestSelector(e.target);
             const value = e.target.value;
             const text = e.target.options[e.target.selectedIndex]?.text || '';
-            emitRecord({ actionType: 'select', selector: selector, value: value, extra: text, xpath: getXPath(e.target) });
+            emitRecord({ actionType: 'select', selector: selector, value: value, extra: text, xpath: getXPath(e.target) }, e.target);
           } else if (e.target.type === 'checkbox') {
             const selector = getBestSelector(e.target);
-            emitRecord({ actionType: 'checkbox', selector: selector, value: String(e.target.checked), extra: '', xpath: getXPath(e.target) });
+            emitRecord({ actionType: 'checkbox', selector: selector, value: String(e.target.checked), extra: '', xpath: getXPath(e.target) }, e.target);
           } else if (e.target.type === 'radio') {
             const selector = getBestSelector(e.target);
-            emitRecord({ actionType: 'radio', selector: selector, value: e.target.value, extra: '', xpath: getXPath(e.target) });
+            emitRecord({ actionType: 'radio', selector: selector, value: e.target.value, extra: '', xpath: getXPath(e.target) }, e.target);
           }
         }, true);
         
         // Capture form submissions
         document.addEventListener('submit', function(e) {
           const selector = getBestSelector(e.target);
-          emitRecord({ actionType: 'submit', selector: selector, value: 'form', extra: '', xpath: getXPath(e.target) });
+          emitRecord({ actionType: 'submit', selector: selector, value: 'form', extra: '', xpath: getXPath(e.target) }, e.target);
         }, true);
         
         // Capture focus events
         document.addEventListener('focus', function(e) {
           const selector = getBestSelector(e.target);
           if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') {
-            emitRecord({ actionType: 'focus', selector: selector, value: e.target.tagName.toLowerCase(), extra: '', xpath: getXPath(e.target) });
+            emitRecord({ actionType: 'focus', selector: selector, value: e.target.tagName.toLowerCase(), extra: '', xpath: getXPath(e.target) }, e.target);
           }
         }, true);
         
@@ -1143,7 +1276,7 @@ function injectRecordingScript() {
             if (e.target.tagName === 'A' || e.target.tagName === 'BUTTON' || 
                 e.target.getAttribute('role') === 'button') {
               const selector = getBestSelector(e.target);
-              emitRecord({ actionType: 'hover', selector: selector, value: getElementText(e.target), extra: '', xpath: getXPath(e.target) });
+              emitRecord({ actionType: 'hover', selector: selector, value: getElementText(e.target), extra: '', xpath: getXPath(e.target) }, e.target);
             }
           }, 500); // Record hover after 500ms
         }, true);
@@ -1152,14 +1285,20 @@ function injectRecordingScript() {
         let draggedElement = null;
         document.addEventListener('dragstart', function(e) {
           draggedElement = e.target;
-          const selector = getBestSelector(e.target);
-          emitRecord({ actionType: 'dragstart', selector: selector, value: getElementText(e.target), extra: '', xpath: getXPath(e.target) });
         }, true);
         
         document.addEventListener('drop', function(e) {
-          const selector = getBestSelector(e.target);
-          const draggedSelector = draggedElement ? getBestSelector(draggedElement) : '';
-          emitRecord({ actionType: 'drop', selector: selector, value: draggedSelector, extra: '', xpath: getXPath(e.target) });
+          if (!draggedElement) return;
+          const sourceSelector = getBestSelector(draggedElement);
+          const targetSelector = getBestSelector(e.target);
+          emitRecord({
+            actionType: 'drag',
+            selector: sourceSelector,
+            value: targetSelector,
+            extra: getElementText(e.target),
+            xpath: getXPath(draggedElement)
+          }, draggedElement);
+          draggedElement = null;
         }, true);
         
         console.log('Chromation: Enhanced recording injected - capturing clicks, inputs, scrolls, keys, and more');
@@ -1167,8 +1306,46 @@ function injectRecordingScript() {
     `);
     
     // Listen to console messages from webview to capture recorded actions
-    browserWebview.addEventListener('console-message', (e) => {
+    if (browserWebview._chromationConsoleHandler) {
+      browserWebview.removeEventListener('console-message', browserWebview._chromationConsoleHandler);
+    }
+    const handleChromationConsoleMessage = async (e) => {
       if (!isRecording) return;
+
+      if (e.message.startsWith('CHROMATION_FILE_REQUEST_JSON:')) {
+        if (uploadSelectionInProgress) return;
+        uploadSelectionInProgress = true;
+        try {
+          const request = JSON.parse(e.message.replace('CHROMATION_FILE_REQUEST_JSON:', ''));
+          const result = await ipcRenderer.invoke('choose-upload-files', {
+            guestWebContentsId: browserWebview.getWebContentsId(),
+            selector: request.selector,
+            multiple: request.multiple,
+          });
+          if (result.success && result.filePaths.length > 0 && recorder) {
+            recorder.recordAction({
+              type: 'upload',
+              selector: request.selector,
+              value: result.filePaths[0],
+              xpath: request.xpath || '',
+              metadata: { files: result.filePaths },
+              locatorFingerprint: request.locatorFingerprint,
+              timestamp: Date.now(),
+            });
+            updateActionsDisplay();
+            const actionCount = recorder.getActions().length;
+            recordingStatus.textContent = `⏺️ Recording... (${actionCount} actions)`;
+          } else if (!result.canceled) {
+            throw new Error(result.error || 'File selection failed');
+          }
+        } catch (error) {
+          console.error('Failed to record file selection:', error);
+          statusText.textContent = `File selection failed: ${error.message}`;
+        } finally {
+          uploadSelectionInProgress = false;
+        }
+        return;
+      }
 
       if (e.message.startsWith('CHROMATION_RECORD_JSON:')) {
         let payload;
@@ -1184,6 +1361,7 @@ function injectRecordingScript() {
         const value = payload.value || '';
         const extra = payload.extra || '';
         const xpath = payload.xpath || '';
+        const locatorFingerprint = payload.locatorFingerprint;
 
         if (recorder) {
           const actions = recorder.getActions();
@@ -1197,8 +1375,12 @@ function injectRecordingScript() {
 
           if (actionType === 'input') {
             if (lastAction && lastAction.type === 'input' && lastAction.selector === selector) {
-              lastAction.value = value;
-              lastAction.timestamp = Date.now();
+              recorder.updateLastAction({
+                ...lastAction,
+                value,
+                timestamp: Date.now(),
+                locatorFingerprint: locatorFingerprint || lastAction.locatorFingerprint,
+              });
               updateActionsDisplay();
               return;
             }
@@ -1214,6 +1396,7 @@ function injectRecordingScript() {
             value: value,
             extra: extra,
             xpath: xpath,
+            locatorFingerprint: locatorFingerprint,
             timestamp: Date.now()
           });
 
@@ -1249,8 +1432,11 @@ function injectRecordingScript() {
           if (actionType === 'input') {
             // If last action was also input on same selector, just update it
             if (lastAction && lastAction.type === 'input' && lastAction.selector === selector) {
-              lastAction.value = value;
-              lastAction.timestamp = Date.now();
+              recorder.updateLastAction({
+                ...lastAction,
+                value,
+                timestamp: Date.now(),
+              });
               updateActionsDisplay();
               return; // Don't add new action
             }
@@ -1279,7 +1465,9 @@ function injectRecordingScript() {
           recordingStatus.textContent = `⏺️ Recording... (${actionCount} actions)`;
         }
       }
-    });
+    };
+    browserWebview._chromationConsoleHandler = handleChromationConsoleMessage;
+    browserWebview.addEventListener('console-message', handleChromationConsoleMessage);
     
     console.log('Recording event listeners injected into webview');
   } catch (error) {
@@ -1333,6 +1521,10 @@ function updateActionsDisplay() {
           icon = '📋';
           displayText = `Select "${action.extra || action.value}"`;
           break;
+        case 'upload':
+          icon = '📎';
+          displayText = `Upload ${action.metadata?.files?.length || 1} file(s) to ${action.selector}`;
+          break;
         case 'checkbox':
           icon = '☑️';
           displayText = `${action.value === 'true' ? 'Check' : 'Uncheck'} ${action.selector}`;
@@ -1349,13 +1541,9 @@ function updateActionsDisplay() {
           icon = '👆';
           displayText = `Hover over ${action.value}`;
           break;
-        case 'dragstart':
+        case 'drag':
           icon = '🤏';
-          displayText = `Start dragging ${action.value}`;
-          break;
-        case 'drop':
-          icon = '📥';
-          displayText = `Drop at ${action.selector}`;
+          displayText = `Drag ${action.selector} to ${action.value}`;
           break;
         case 'submit':
           icon = '📤';
@@ -1473,7 +1661,7 @@ async function replayActions(speed = 1.0, engine = 'webview', policy = { timeout
         const stepStartedAt = Date.now();
 
         try {
-          await runReplayActionWithTimeout(action, policy.timeoutMs);
+          const replayOutcome = await runReplayActionWithTimeout(action, policy.timeoutMs);
           const screenshot = await captureWebviewScreenshotBase64();
           stepResult = {
             index: i,
@@ -1481,6 +1669,7 @@ async function replayActions(speed = 1.0, engine = 'webview', policy = { timeout
             error: null,
             duration: Date.now() - stepStartedAt,
             screenshot,
+            healing: replayOutcome?.healing || null,
           };
           replayReport.passed.push(stepResult);
           break;
@@ -1566,6 +1755,7 @@ async function replayActionsWithExecutor(actions, policy) {
         error: null,
         duration: step.durationMs,
         screenshot: step.evidence?.screenshotBase64 || null,
+        healing: step.healing || null,
       })),
     failed: execution.steps
       .filter((step) => step.status === 'failed')
@@ -1575,6 +1765,7 @@ async function replayActionsWithExecutor(actions, policy) {
         error: step.error || 'Execution failed',
         duration: step.durationMs,
         screenshot: step.evidence?.screenshotBase64 || null,
+        healing: step.healing || null,
       })),
   };
 
@@ -1631,8 +1822,128 @@ function clearReplayHighlight() {
   items.forEach(item => item.style.background = '#ffffff');
 }
 
+async function resolveInBrowserSelector(action) {
+  const locatorActions = new Set([
+    'click', 'doubleclick', 'rightclick', 'input', 'select', 'checkbox', 'radio',
+    'focus', 'hover', 'submit', 'upload', 'assert',
+  ]);
+  if (!locatorActions.has(action.type) || !action.selector) {
+    return { selector: action.selector, healing: null };
+  }
+
+  const payload = JSON.stringify({
+    selector: action.selector,
+    fingerprint: action.locatorFingerprint || null,
+  });
+  const result = await browserWebview.executeJavaScript(`
+    (function(payload) {
+      function safeQuery(selector) {
+        try { return document.querySelectorAll(selector); } catch (_) { return null; }
+      }
+      const direct = safeQuery(payload.selector);
+      if (direct && direct.length === 1) {
+        return { selector: payload.selector, confidence: 1, healed: false };
+      }
+      const expected = payload.fingerprint;
+      if (!expected) {
+        return { error: 'Recorded selector is invalid or missing and no locator fingerprint is available' };
+      }
+      function normalized(value) {
+        return String(value || '').trim().toLowerCase().replace(/\\s+/g, ' ');
+      }
+      function textScore(left, right) {
+        left = normalized(left);
+        right = normalized(right);
+        if (!left || !right) return 0;
+        if (left === right) return 1;
+        if (left.includes(right) || right.includes(left)) return 0.8;
+        const a = new Set(left.split(' '));
+        const b = new Set(right.split(' '));
+        const overlap = Array.from(a).filter((token) => b.has(token)).length;
+        return overlap / new Set([...a, ...b]).size;
+      }
+      function generatedId(id) {
+        return /^(react-aria|html5_|ember|vue-|id_\\d+|\\d+$)/i.test(String(id || '')) ||
+          /[a-f0-9]{12,}/i.test(String(id || ''));
+      }
+      function selectorFor(element, index) {
+        for (const name of ['data-testid', 'data-test', 'data-qa']) {
+          const value = element.getAttribute(name);
+          if (value) return '[' + name + '="' + CSS.escape(value) + '"]';
+        }
+        if (element.id && !generatedId(element.id)) return '#' + CSS.escape(element.id);
+        const token = 'replay-' + index + '-' + Date.now();
+        element.setAttribute('data-chromation-replay-id', token);
+        return '[data-chromation-replay-id="' + token + '"]';
+      }
+      const expectedAttributes = Object.entries(expected.attributes || {})
+        .filter(([name, value]) => !(name === 'id' && generatedId(value)));
+      const candidates = Array.from(document.querySelectorAll('body *'))
+        .filter((element) => {
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+        })
+        .slice(0, 250)
+        .map((element, index) => {
+          const attributeScore = expectedAttributes.length === 0 ? 0 :
+            expectedAttributes.reduce((sum, [name, value]) =>
+              sum + textScore(value, element.getAttribute(name)), 0) / expectedAttributes.length;
+          const tagScore = normalized(expected.tagName) === normalized(element.tagName) ? 1 : 0;
+          const visibleText = normalized(element.textContent).slice(0, 160);
+          const semanticScore = Math.max(
+            textScore(expected.accessibleName, element.getAttribute('aria-label')),
+            textScore(expected.role, element.getAttribute('role'))
+          );
+          const confidence =
+            attributeScore * 0.4 +
+            textScore(expected.text, visibleText) * 0.3 +
+            tagScore * 0.2 +
+            semanticScore * 0.1;
+          return { selector: selectorFor(element, index), confidence };
+        })
+        .sort((left, right) => right.confidence - left.confidence);
+      const best = candidates[0];
+      const second = candidates[1];
+      if (!best || best.confidence < 0.62) {
+        return { error: 'No fingerprint candidate met the 62% confidence threshold', bestConfidence: best?.confidence || 0 };
+      }
+      if (second && best.confidence - second.confidence < 0.08) {
+        return { error: 'Fingerprint match is ambiguous', bestConfidence: best.confidence };
+      }
+      return {
+        selector: best.selector,
+        confidence: best.confidence,
+        healed: true,
+      };
+    })(${payload});
+  `);
+
+  if (result.error) {
+    const confidence = result.bestConfidence
+      ? ` (best candidate ${Math.round(result.bestConfidence * 100)}%)`
+      : '';
+    throw new Error(`${result.error}${confidence}`);
+  }
+  return {
+    selector: result.selector,
+    healing: result.healed
+      ? {
+          originalSelector: action.selector,
+          healedSelector: result.selector,
+          confidence: result.confidence,
+          strategy: 'in-browser-fingerprint-similarity',
+          timestamp: Date.now(),
+        }
+      : null,
+  };
+}
+
 async function replayAction(action) {
+  const originalSelector = action.selector;
   try {
+    const resolution = await resolveInBrowserSelector(action);
+    action = { ...action, selector: resolution.selector };
     switch (action.type) {
       case 'navigate':
         navigateToUrl(action.value);
@@ -1879,17 +2190,59 @@ async function replayAction(action) {
         `);
         break;
         
+      case 'upload': {
+        const recordedFiles = Array.isArray(action.metadata?.files) && action.metadata.files.length > 0
+          ? action.metadata.files
+          : action.value
+            ? [action.value]
+            : [];
+        const result = await ipcRenderer.invoke('set-upload-files', {
+          guestWebContentsId: browserWebview.getWebContentsId(),
+          selector: action.selector,
+          filePaths: recordedFiles,
+        });
+        if (!result.success) {
+          throw new Error(result.error || 'Unable to set the recorded upload files');
+        }
+        break;
+      }
+
+      case 'drag':
+        await browserWebview.executeJavaScript(`
+          (function() {
+            const source = document.querySelector('${escapeSelector(action.selector)}');
+            const target = document.querySelector('${escapeSelector(action.value)}');
+            if (!source || !target) {
+              throw new Error('Drag source or target element not found');
+            }
+            const dataTransfer = new DataTransfer();
+            source.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer }));
+            target.dispatchEvent(new DragEvent('dragenter', { bubbles: true, dataTransfer }));
+            target.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer }));
+            target.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer }));
+            source.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer }));
+            return true;
+          })();
+        `);
+        break;
+
       default:
-        console.warn('Unsupported action type for replay:', action.type);
+        throw new Error('Unsupported action type for in-browser replay: ' + action.type);
     }
+    return { healing: resolution.healing };
   } catch (error) {
     console.error('Failed to replay action:', action, error);
-    throw new Error(`Failed to replay ${action.type} on ${action.selector}: ${error.message}`);
+    throw new Error(`Failed to replay ${action.type} on ${originalSelector}: ${error.message}`);
   }
 }
 
 function escapeSelector(selector) {
-  return selector.replace(/'/g, "\\'").replace(/"/g, '\\"');
+  return String(selector || '')
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/"/g, '\\"')
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n');
 }
 
 function escapeValue(value) {
@@ -2012,7 +2365,7 @@ ipcRenderer.on('toggle-scraper', () => {
   toggleTool('scraper');
 });
 
-ipcRenderer.on('toggle-healing', (event, enabled) => {
+ipcRenderer.on('toggle-healing', (enabled) => {
   if (healingEngine) {
     const menuHealing = document.getElementById('menu-healing');
     const statusSpan = menuHealing?.querySelector('.menu-status');
@@ -2271,7 +2624,7 @@ function showHelp() {
         <p style="font-size: 13px; color: #5f6368; margin-bottom: 12px;">
           For complete documentation, visit our GitHub repository.
         </p>
-        <button class="primary-btn" onclick="require('electron').shell.openExternal('https://github.com/IamBlackShifu/Chromation-AutoHeal-Browser')">
+        <button class="primary-btn" data-external-url="https://github.com/IamBlackShifu/Chromation-AutoHeal-Browser">
           View on GitHub
         </button>
       </div>
@@ -2305,7 +2658,7 @@ function checkForUpdates() {
           </ul>
         </div>
         
-        <button class="secondary-btn" onclick="require('electron').shell.openExternal('https://github.com/IamBlackShifu/Chromation-AutoHeal-Browser/releases')">
+        <button class="secondary-btn" data-external-url="https://github.com/IamBlackShifu/Chromation-AutoHeal-Browser/releases">
           View Release Notes
         </button>
       </div>
@@ -2353,10 +2706,10 @@ function showAbout() {
         </div>
         
         <div style="margin-top: 24px;">
-          <button class="primary-btn" onclick="require('electron').shell.openExternal('https://github.com/IamBlackShifu/Chromation-AutoHeal-Browser')" style="margin-right: 8px;">
+          <button class="primary-btn" data-external-url="https://github.com/IamBlackShifu/Chromation-AutoHeal-Browser" style="margin-right: 8px;">
             GitHub Repository
           </button>
-          <button class="secondary-btn" onclick="require('electron').shell.openExternal('https://github.com/IamBlackShifu/Chromation-AutoHeal-Browser/issues')">
+          <button class="secondary-btn" data-external-url="https://github.com/IamBlackShifu/Chromation-AutoHeal-Browser/issues">
             Report Issue
           </button>
         </div>
@@ -2422,8 +2775,9 @@ async function importRecording() {
     if (result.success && result.recording) {
       // Load the imported recording
       if (recorder && result.recording.actions) {
-        recorder.setActions(result.recording.actions);
-        recordedActions = result.recording.actions;
+        const actions = normalizeRecordedActions(result.recording.actions);
+        recorder.setActions(actions);
+        recordedActions = actions;
         updateActionsDisplay();
         statusText.textContent = `Imported recording: ${result.recording.name}`;
         showNotification('✅ Recording imported!', `${result.recording.actions.length} actions loaded`);
@@ -2478,7 +2832,7 @@ async function showSavedRecordings() {
               <div class="recording-info">
                 <h5 class="recording-name">${rec.name}</h5>
                 <p class="recording-meta">
-                  ${rec.actionCount} actions • ${new Date(rec.timestamp).toLocaleString()}
+                  ${rec.actionCount} actions • ${new Date(rec.createdAt || rec.timestamp).toLocaleString()}
                 </p>
               </div>
               <div class="recording-actions">
@@ -2547,8 +2901,9 @@ async function loadRecording(filename) {
     
     if (result.success && result.recording) {
       if (recorder && result.recording.actions) {
-        recorder.setActions(result.recording.actions);
-        recordedActions = result.recording.actions;
+        const actions = normalizeRecordedActions(result.recording.actions);
+        recorder.setActions(actions);
+        recordedActions = actions;
         
         // Switch to recorder panel
         toggleTool('recorder');
@@ -2592,6 +2947,8 @@ function showReplayReport() {
   const totalActions = replayReport.total;
   const passed = replayReport.passed.length;
   const failed = replayReport.failed.length;
+  const healingItems = [...replayReport.passed, ...replayReport.failed]
+    .filter((item) => item.healing);
   const passRate = ((passed / totalActions) * 100).toFixed(1);
   
   panelTitle.textContent = 'Replay Report';
@@ -2626,9 +2983,37 @@ function showReplayReport() {
             <div class="stat-label">Total</div>
             <div class="stat-value" style="color: #1a73e8;">${totalActions}</div>
           </div>
+          <div class="stat-item" style="background: #fff8e1; border-left: 4px solid #f9ab00;">
+            <div class="stat-label">Healed</div>
+            <div class="stat-value" style="color: #b06000;">${healingItems.length}</div>
+          </div>
         </div>
       </div>
     </div>
+
+    ${healingItems.length > 0 ? `
+    <div class="panel-card">
+      <div class="card-header">
+        <h5>Healing Events</h5>
+        <span class="badge" style="background: #f9ab00;">${healingItems.length}</span>
+      </div>
+      <div class="card-content">
+        ${healingItems.map((item) => `
+          <div class="failed-action-item" style="border-left-color: #f9ab00;">
+            <div class="failed-action-header">
+              <span class="failed-action-number">#${item.index + 1}</span>
+              <span class="failed-action-type">${escapeReportText(item.action.type)}</span>
+              <span class="badge" style="background: #f9ab00;">${Math.round(item.healing.confidence * 100)}%</span>
+            </div>
+            <div class="failed-action-selector">
+              ${escapeReportText(item.healing.originalSelector)} &rarr; ${escapeReportText(item.healing.healedSelector)}
+            </div>
+            <div class="panel-description">${escapeReportText(item.healing.strategy)}</div>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+    ` : ''}
     
     ${failed > 0 ? `
     <div class="panel-card">
@@ -2657,15 +3042,15 @@ function showReplayReport() {
       </div>
       <div class="card-content">
         <div class="button-group">
-          <button class="secondary-btn full-width" onclick="exportReplayReport('html')">Export HTML</button>
-          <button class="secondary-btn full-width" onclick="exportReplayReport('json')">Export JSON</button>
-          <button class="secondary-btn full-width" onclick="exportReplayReport('junit')">Export JUnit</button>
+          <button class="secondary-btn full-width" data-report-format="html">Export HTML</button>
+          <button class="secondary-btn full-width" data-report-format="json">Export JSON</button>
+          <button class="secondary-btn full-width" data-report-format="junit">Export JUnit</button>
         </div>
       </div>
     </div>
     
     <div class="panel-section">
-      <button class="secondary-btn full-width" onclick="toggleTool('recorder')">
+      <button class="secondary-btn full-width" data-open-tool="recorder">
         Back to Recorder
       </button>
     </div>
@@ -2701,6 +3086,7 @@ async function exportReplayReport(format) {
       error: '',
       duration: item.duration || 0,
       screenshot: item.screenshot || null,
+      healing: item.healing || null,
     });
   }
   for (const item of replayReport.failed) {
@@ -2711,6 +3097,7 @@ async function exportReplayReport(format) {
       error: item.error || 'Replay failed',
       duration: item.duration || 0,
       screenshot: item.screenshot || null,
+      healing: item.healing || null,
     });
   }
   steps.sort((a, b) => a.index - b.index);
@@ -2728,11 +3115,16 @@ async function exportReplayReport(format) {
       duration: step.duration || 0,
       screenshot: step.screenshot || undefined,
       error: step.error || undefined,
+      healing: step.healing || undefined,
+      healedLocators: step.healing
+        ? [`${step.healing.originalSelector} -> ${step.healing.healedSelector}`]
+        : undefined,
     })),
     screenshots: steps
       .map((step) => step.screenshot)
       .filter((value) => Boolean(value)),
-    healingEvents: 0,
+    healingEvents: steps.filter((step) => Boolean(step.healing)).length,
+    healingDetails: steps.map((step) => step.healing).filter((healing) => Boolean(healing)),
     networkLogs: [],
     consoleLogs: [],
   };

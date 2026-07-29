@@ -1,4 +1,5 @@
 import { RecordedAction } from '../recorder/Recorder';
+import type { HealingResult } from '../healing/HealingEngine';
 
 export type AssertionKind = 'text-contains' | 'visible' | 'value-equals' | 'attribute-equals';
 
@@ -22,6 +23,8 @@ export interface EvidencePolicy {
 
 export interface ExecutionOptions {
   headless?: boolean;
+  channel?: string;
+  executablePath?: string;
   baseUrl?: string;
   continueOnFailure?: boolean;
   defaultStepTimeoutMs?: number;
@@ -49,6 +52,7 @@ export interface StepExecutionResult {
   endedAt: number;
   durationMs: number;
   retries: number;
+  healing?: HealingResult;
   error?: string;
   evidence?: StepFailureEvidence;
 }
@@ -67,6 +71,7 @@ export interface ExecutionResult {
   endedAt: number;
   durationMs: number;
   status: 'passed' | 'failed';
+  runError?: string;
   options: Required<Pick<ExecutionOptions, 'continueOnFailure' | 'defaultStepTimeoutMs'>>;
   steps: StepExecutionResult[];
   summary: ExecutionSummary;

@@ -90,4 +90,36 @@ describe('Recorder', () => {
     recorder.clearActions();
     expect(recorder.getActions()).toHaveLength(0);
   });
+
+  test('rejects malformed imported actions', () => {
+    expect(() => recorder.setActions([
+      { type: 'click', selector: '#valid', timestamp: -1 },
+    ])).toThrow('timestamp must be a non-negative number');
+  });
+
+  test('updates the stored final input action across bridge-style clones', () => {
+    recorder.startRecording();
+    recorder.recordAction({
+      type: 'input',
+      selector: '#name',
+      value: 'a',
+      timestamp: 100,
+    });
+
+    const clonedAction = { ...recorder.getActions()[0], value: 'complete text', timestamp: 200 };
+    expect(recorder.updateLastAction(clonedAction)).toBe(true);
+
+    expect(recorder.getActions()).toHaveLength(1);
+    expect(recorder.getActions()[0].value).toBe('complete text');
+    expect(recorder.getActions()[0].timestamp).toBe(200);
+  });
+
+  test('does not update a missing final action', () => {
+    expect(recorder.updateLastAction({
+      type: 'input',
+      selector: '#name',
+      value: 'text',
+      timestamp: 100,
+    })).toBe(false);
+  });
 });

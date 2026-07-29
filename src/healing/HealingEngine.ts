@@ -1,13 +1,28 @@
-/**
- * HealingEngine - Locator Auto-Healing System
- * 
- * AI + rules-based locator repair system
- * Detects broken locators and finds closest matches using similarity scoring
- */
+import type { Page } from 'playwright-core';
 
-export interface HealingStrategy {
-  name: 'attribute-similarity' | 'dom-hierarchy' | 'visual-position' | 'text-proximity' | 'ai-pattern';
-  weight: number;
+export interface LocatorFingerprint {
+  tagName: string;
+  attributes: Record<string, string>;
+  text?: string;
+  accessibleName?: string;
+  role?: string;
+  domPath?: string[];
+  boundingBox?: { x: number; y: number; width: number; height: number };
+}
+
+export interface HealingScoreBreakdown {
+  attributes: number;
+  text: number;
+  semantics: number;
+  hierarchy: number;
+  position: number;
+}
+
+export interface HealingCandidate {
+  selector: string;
+  fingerprint: LocatorFingerprint;
+  confidence: number;
+  scoreBreakdown: HealingScoreBreakdown;
 }
 
 export interface HealingResult {
@@ -16,59 +31,128 @@ export interface HealingResult {
   confidence: number;
   strategy: string;
   timestamp: number;
+  scoreBreakdown: HealingScoreBreakdown;
+  alternatives: Array<{ selector: string; confidence: number }>;
+}
+
+export interface HealingOptions {
+  confidenceThreshold?: number;
+  ambiguityMargin?: number;
+  maxCandidates?: number;
 }
 
 export class HealingEngine {
-  private healingEnabled: boolean = true;
+  private healingEnabled = true;
   private healingHistory: HealingResult[] = [];
-  private strategies: HealingStrategy[] = [
-    { name: 'attribute-similarity', weight: 0.3 },
-    { name: 'dom-hierarchy', weight: 0.25 },
-    { name: 'visual-position', weight: 0.2 },
-    { name: 'text-proximity', weight: 0.15 },
-    { name: 'ai-pattern', weight: 0.1 },
-  ];
+  private readonly confidenceThreshold: number;
+  private readonly ambiguityMargin: number;
+  private readonly maxCandidates: number;
 
-  constructor() {
-    console.log('Healing Engine initialized');
+  constructor(options: HealingOptions = {}) {
+    this.confidenceThreshold = options.confidenceThreshold ?? 0.68;
+    this.ambiguityMargin = options.ambiguityMargin ?? 0.08;
+    this.maxCandidates = options.maxCandidates ?? 250;
   }
 
   enable(): void {
     this.healingEnabled = true;
-    console.log('Auto-healing enabled');
   }
 
   disable(): void {
     this.healingEnabled = false;
-    console.log('Auto-healing disabled');
   }
 
-  async detectBrokenLocator(selector: string): Promise<boolean> {
-    // TODO: Implement locator detection logic
-    console.log(`Checking if locator is broken: ${selector}`);
-    return false;
+  async detectBrokenLocator(selector: string, page: Page): Promise<boolean> {
+    try {
+      return (await page.locator(selector).count()) === 0;
+    } catch {
+      return true;
+    }
   }
 
-  async healLocator(brokenSelector: string, page: any): Promise<HealingResult | null> {
+  async captureFingerprint(page: Page, selector: string): Promise<LocatorFingerprint> {
+    return page.locator(selector).first().evaluate((element) => {
+      const html = element as HTMLElement;
+      const attributes: Record<string, string> = {};
+      for (const name of [
+        'id',
+        'name',
+        'type',
+        'placeholder',
+        'title',
+        'aria-label',
+        'data-testid',
+        'data-test',
+        'data-qa',
+      ]) {
+        const value = element.getAttribute(name);
+        if (value) attributes[name] = value;
+      }
+
+      const domPath: string[] = [];
+      let current: Element | null = element;
+      while (current && domPath.length < 8) {
+        domPath.unshift(current.tagName.toLowerCase());
+        current = current.parentElement;
+      }
+      const rect = html.getBoundingClientRect();
+
+      return {
+        tagName: element.tagName.toLowerCase(),
+        attributes,
+        text: (element.textContent ?? '').trim().replace(/\s+/g, ' ').slice(0, 160),
+        accessibleName: element.getAttribute('aria-label') ?? undefined,
+        role: element.getAttribute('role') ?? undefined,
+        domPath,
+        boundingBox: {
+          x: rect.x,
+          y: rect.y,
+          width: rect.width,
+          height: rect.height,
+        },
+      };
+    });
+  }
+
+  async healLocator(
+    brokenSelector: string,
+    page: Page,
+    original: LocatorFingerprint
+  ): Promise<HealingResult | null> {
     if (!this.healingEnabled) {
-      console.log('Healing disabled, skipping...');
       return null;
     }
 
-    console.log(`Attempting to heal locator: ${brokenSelector}`);
-    
-    // TODO: Implement healing logic using similarity scoring
-    // 1. Re-scan DOM for closest matches
-    // 2. Compare attributes, structure, and text
-    // 3. Calculate similarity scores
-    // 4. Return best match with confidence
+    const liveCandidates = await this.collectCandidates(page);
+    const candidates = liveCandidates
+      .map((candidate) => this.scoreCandidate(original, candidate))
+      .sort((left, right) => right.confidence - left.confidence);
+    const best = candidates[0];
+    const runnerUp = candidates[1];
+
+    if (
+      !best ||
+      best.confidence < this.confidenceThreshold ||
+      (runnerUp && best.confidence - runnerUp.confidence < this.ambiguityMargin)
+    ) {
+      return null;
+    }
+
+    if ((await page.locator(best.selector).count()) !== 1) {
+      return null;
+    }
 
     const result: HealingResult = {
       originalSelector: brokenSelector,
-      healedSelector: brokenSelector, // Placeholder
-      confidence: 0.0,
-      strategy: 'none',
+      healedSelector: best.selector,
+      confidence: best.confidence,
+      strategy: 'fingerprint-similarity',
       timestamp: Date.now(),
+      scoreBreakdown: best.scoreBreakdown,
+      alternatives: candidates.slice(1, 4).map(({ selector, confidence }) => ({
+        selector,
+        confidence,
+      })),
     };
 
     this.healingHistory.push(result);
@@ -81,10 +165,136 @@ export class HealingEngine {
 
   clearHistory(): void {
     this.healingHistory = [];
-    console.log('Healing history cleared');
   }
 
   isEnabled(): boolean {
     return this.healingEnabled;
+  }
+
+  private async collectCandidates(page: Page): Promise<Array<{ selector: string; fingerprint: LocatorFingerprint }>> {
+    return page.evaluate((maximum) => {
+      const escape = (value: string): string => {
+        const css = globalThis.CSS;
+        return css?.escape ? css.escape(value) : value.replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+      };
+      const pathFor = (element: Element): string[] => {
+        const path: string[] = [];
+        let current: Element | null = element;
+        while (current && path.length < 8) {
+          let part = current.tagName.toLowerCase();
+          if (current.id) {
+            part += `#${escape(current.id)}`;
+            path.unshift(part);
+            break;
+          }
+          path.unshift(part);
+          current = current.parentElement;
+        }
+        return path;
+      };
+      const selectorFor = (element: Element, index: number): string => {
+        const testAttribute = ['data-testid', 'data-test', 'data-qa'].find((name) =>
+          element.hasAttribute(name)
+        );
+        if (testAttribute) {
+          return `[${testAttribute}="${escape(element.getAttribute(testAttribute) ?? '')}"]`;
+        }
+        if (element.id) {
+          return `#${escape(element.id)}`;
+        }
+        return `[data-chromation-healing-id="${index}"]`;
+      };
+
+      return Array.from(document.querySelectorAll('body *'))
+        .filter((element) => {
+          const html = element as HTMLElement;
+          const rect = html.getBoundingClientRect();
+          const style = getComputedStyle(html);
+          return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+        })
+        .slice(0, maximum)
+        .map((element, index) => {
+          const html = element as HTMLElement;
+          const selector = selectorFor(element, index);
+          if (selector.startsWith('[data-chromation-healing-id=')) {
+            element.setAttribute('data-chromation-healing-id', String(index));
+          }
+          const attributes: Record<string, string> = {};
+          for (const name of ['id', 'name', 'type', 'placeholder', 'title', 'aria-label', 'data-testid', 'data-test', 'data-qa']) {
+            const value = element.getAttribute(name);
+            if (value) attributes[name] = value;
+          }
+          const rect = html.getBoundingClientRect();
+          return {
+            selector,
+            fingerprint: {
+              tagName: element.tagName.toLowerCase(),
+              attributes,
+              text: (element.textContent ?? '').trim().replace(/\s+/g, ' ').slice(0, 160),
+              accessibleName: element.getAttribute('aria-label') ?? undefined,
+              role: element.getAttribute('role') ?? undefined,
+              domPath: pathFor(element),
+              boundingBox: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+            },
+          };
+        });
+    }, this.maxCandidates);
+  }
+
+  private scoreCandidate(
+    original: LocatorFingerprint,
+    candidate: { selector: string; fingerprint: LocatorFingerprint }
+  ): HealingCandidate {
+    const attributes = this.attributeSimilarity(original.attributes, candidate.fingerprint.attributes);
+    const text = this.stringSimilarity(original.text, candidate.fingerprint.text);
+    const role = this.stringSimilarity(original.role, candidate.fingerprint.role);
+    const name = this.stringSimilarity(original.accessibleName, candidate.fingerprint.accessibleName);
+    const tag = original.tagName.toLowerCase() === candidate.fingerprint.tagName.toLowerCase() ? 1 : 0;
+    const semantics = tag * 0.5 + role * 0.2 + name * 0.3;
+    const hierarchy = this.pathSimilarity(original.domPath, candidate.fingerprint.domPath);
+    const position = this.positionSimilarity(original.boundingBox, candidate.fingerprint.boundingBox);
+    const scoreBreakdown = { attributes, text, semantics, hierarchy, position };
+    const confidence =
+      attributes * 0.4 + text * 0.2 + semantics * 0.2 + hierarchy * 0.12 + position * 0.08;
+
+    return { ...candidate, confidence, scoreBreakdown };
+  }
+
+  private attributeSimilarity(expected: Record<string, string>, actual: Record<string, string>): number {
+    const entries = Object.entries(expected);
+    if (entries.length === 0) return 0;
+    const scores = entries.map(([name, value]) => this.stringSimilarity(value, actual[name]));
+    return scores.reduce((total, score) => total + score, 0) / scores.length;
+  }
+
+  private pathSimilarity(expected: string[] = [], actual: string[] = []): number {
+    if (expected.length === 0 || actual.length === 0) return 0;
+    let matches = 0;
+    const length = Math.min(expected.length, actual.length);
+    for (let offset = 1; offset <= length; offset++) {
+      if (expected[expected.length - offset] === actual[actual.length - offset]) matches++;
+    }
+    return matches / Math.max(expected.length, actual.length);
+  }
+
+  private positionSimilarity(
+    expected?: LocatorFingerprint['boundingBox'],
+    actual?: LocatorFingerprint['boundingBox']
+  ): number {
+    if (!expected || !actual) return 0;
+    const distance = Math.hypot(expected.x - actual.x, expected.y - actual.y);
+    return Math.max(0, 1 - distance / 1000);
+  }
+
+  private stringSimilarity(expected?: string, actual?: string): number {
+    if (!expected || !actual) return 0;
+    const left = expected.trim().toLowerCase();
+    const right = actual.trim().toLowerCase();
+    if (left === right) return 1;
+    const leftTokens = new Set(left.split(/\s+/));
+    const rightTokens = new Set(right.split(/\s+/));
+    const intersection = [...leftTokens].filter((token) => rightTokens.has(token)).length;
+    const union = new Set([...leftTokens, ...rightTokens]).size;
+    return union === 0 ? 0 : intersection / union;
   }
 }

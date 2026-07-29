@@ -4,6 +4,8 @@
  * Records user browser interactions and converts them into automation scripts
  * Supports multiple export formats: Selenium, Playwright, Cypress, Puppeteer
  */
+import type { LocatorFingerprint } from '../healing/HealingEngine';
+import { validateRecordedAction, validateRecordedActions } from '../recording/RecordingSchema';
 
 export type ActionType =
   | 'click'
@@ -41,7 +43,8 @@ export interface RecordedAction {
   extra?: string;
   xpath?: string;
   timestamp: number;
-  metadata?: Record<string, any> | AssertionMetadata;
+  metadata?: Record<string, unknown> | AssertionMetadata;
+  locatorFingerprint?: LocatorFingerprint;
 }
 
 export type ExportFormat =
@@ -76,7 +79,7 @@ export class Recorder {
 
   recordAction(action: RecordedAction): void {
     if (this.isRecording) {
-      this.actions.push(action);
+      this.actions.push(validateRecordedAction(action));
       console.log(`Action recorded: ${action.type} on ${action.selector}`);
     }
   }
@@ -85,8 +88,20 @@ export class Recorder {
     return [...this.actions];
   }
 
+  updateLastAction(action: RecordedAction): boolean {
+    if (this.actions.length === 0) {
+      return false;
+    }
+    const current = this.actions[this.actions.length - 1];
+    if (current.type !== action.type || current.selector !== action.selector) {
+      return false;
+    }
+    this.actions[this.actions.length - 1] = validateRecordedAction(action);
+    return true;
+  }
+
   setActions(actions: RecordedAction[]): void {
-    this.actions = [...actions];
+    this.actions = [...validateRecordedActions(actions)];
     console.log(`Recorder actions replaced. Loaded ${this.actions.length} actions`);
   }
 

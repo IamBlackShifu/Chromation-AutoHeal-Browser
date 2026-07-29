@@ -3,9 +3,13 @@
  * This creates the browser window and handles the main application lifecycle
  */
 
-const { app, BrowserWindow, ipcMain, Menu, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, dialog, webContents } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const {
+  createRecordingDocument,
+  parseRecordingDocument,
+} = require('./dist/recording/RecordingSchema');
 
 let mainWindow;
 let browserView;
@@ -21,9 +25,10 @@ function createWindow() {
     title: 'Chromation AutoHeal Browser',
     icon: path.join(__dirname, 'assets', 'icon.png'),
     webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
-      enableRemoteModule: true,
+      preload: path.join(__dirname, 'preload.js'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: false,
       webviewTag: true
     }
   });
@@ -171,8 +176,117 @@ ipcMain.on('export-script', (event, format) => {
   console.log('Exporting script in format:', format);
 });
 
+app.on('web-contents-created', (_event, contents) => {
+  contents.on('will-attach-webview', (_attachEvent, webPreferences) => {
+    delete webPreferences.preload;
+    webPreferences.nodeIntegration = false;
+    webPreferences.contextIsolation = true;
+    webPreferences.sandbox = true;
+  });
+  if (contents.getType() === 'webview') {
+    contents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  }
+});
+
+function resolveUploadGuest(event, guestWebContentsId, selector) {
+  if (
+    !Number.isInteger(guestWebContentsId) ||
+    typeof selector !== 'string' ||
+    selector.length === 0 ||
+    selector.length > 4096
+  ) {
+    throw new Error('Invalid file-input request');
+  }
+  const guest = webContents.fromId(guestWebContentsId);
+  if (
+    !guest ||
+    event.sender !== mainWindow?.webContents ||
+    guest.getOwnerBrowserWindow() !== mainWindow
+  ) {
+    throw new Error('File-input request did not originate from this browser window');
+  }
+  return guest;
+}
+
+async function applyFilesToGuestInput(event, { guestWebContentsId, selector, filePaths }) {
+  const guest = resolveUploadGuest(event, guestWebContentsId, selector);
+  if (
+    !Array.isArray(filePaths) ||
+    filePaths.length === 0 ||
+    filePaths.length > 100 ||
+    filePaths.some((file) => typeof file !== 'string' || !path.isAbsolute(file) || !fs.existsSync(file))
+  ) {
+    throw new Error('Upload files must be existing absolute paths');
+  }
+
+  const attachedHere = !guest.debugger.isAttached();
+  if (attachedHere) guest.debugger.attach('1.3');
+  try {
+    await guest.debugger.sendCommand('DOM.enable');
+    const { root } = await guest.debugger.sendCommand('DOM.getDocument', { depth: -1, pierce: true });
+    const { nodeId } = await guest.debugger.sendCommand('DOM.querySelector', {
+      nodeId: root.nodeId,
+      selector,
+    });
+    if (!nodeId) throw new Error(`File input not found: ${selector}`);
+    await guest.debugger.sendCommand('DOM.setFileInputFiles', { nodeId, files: filePaths });
+    const { object } = await guest.debugger.sendCommand('DOM.resolveNode', { nodeId });
+    if (object.objectId) {
+      await guest.debugger.sendCommand('Runtime.callFunctionOn', {
+        objectId: object.objectId,
+        functionDeclaration: `function() {
+          this.dispatchEvent(new Event('input', { bubbles: true }));
+          this.dispatchEvent(new Event('change', { bubbles: true }));
+        }`,
+      });
+    }
+  } finally {
+    if (attachedHere && guest.debugger.isAttached()) guest.debugger.detach();
+  }
+}
+
+ipcMain.handle('choose-upload-files', async (event, request) => {
+  try {
+    resolveUploadGuest(event, request.guestWebContentsId, request.selector);
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Select file to upload',
+      properties: request.multiple ? ['openFile', 'multiSelections'] : ['openFile'],
+    });
+    if (result.canceled || result.filePaths.length === 0) {
+      return { success: false, canceled: true, filePaths: [] };
+    }
+    await applyFilesToGuestInput(event, { ...request, filePaths: result.filePaths });
+    return { success: true, canceled: false, filePaths: result.filePaths };
+  } catch (error) {
+    console.error('Failed to select upload files:', error);
+    return { success: false, canceled: false, error: error.message, filePaths: [] };
+  }
+});
+
+ipcMain.handle('set-upload-files', async (event, request) => {
+  try {
+    await applyFilesToGuestInput(event, request);
+    return { success: true };
+  } catch (error) {
+    console.error('Failed to replay upload:', error);
+    return { success: false, error: error.message };
+  }
+});
+
 // Recordings directory management
 const recordingsDir = path.join(app.getPath('userData'), 'saved-recordings');
+
+function resolveRecordingPath(filename) {
+  if (typeof filename !== 'string' || path.basename(filename) !== filename || !filename.endsWith('.json')) {
+    throw new Error('Invalid recording filename');
+  }
+  const resolved = path.resolve(recordingsDir, filename);
+  const root = path.resolve(recordingsDir) + path.sep;
+  if (!resolved.startsWith(root)) {
+    throw new Error('Recording path is outside the recordings directory');
+  }
+  return resolved;
+}
 
 // Ensure recordings directory exists
 if (!fs.existsSync(recordingsDir)) {
@@ -186,12 +300,7 @@ ipcMain.handle('save-recording', async (event, { name, actions }) => {
     const filename = `${name.replace(/[^a-z0-9]/gi, '_')}_${timestamp}.json`;
     const filePath = path.join(recordingsDir, filename);
     
-    const recording = {
-      name,
-      actions,
-      timestamp,
-      actionCount: actions.length
-    };
+    const recording = createRecordingDocument(name, actions, timestamp);
     
     fs.writeFileSync(filePath, JSON.stringify(recording, null, 2));
     console.log('Recording saved:', filePath);
@@ -213,7 +322,7 @@ ipcMain.handle('load-recordings', async () => {
         try {
           const filePath = path.join(recordingsDir, file);
           const content = fs.readFileSync(filePath, 'utf8');
-          const data = JSON.parse(content);
+          const data = parseRecordingDocument(JSON.parse(content));
           return {
             filename: file,
             path: filePath,
@@ -238,9 +347,9 @@ ipcMain.handle('load-recordings', async () => {
 // Load specific recording
 ipcMain.handle('load-recording', async (event, filename) => {
   try {
-    const filePath = path.join(recordingsDir, filename);
+    const filePath = resolveRecordingPath(filename);
     const content = fs.readFileSync(filePath, 'utf8');
-    const recording = JSON.parse(content);
+    const recording = parseRecordingDocument(JSON.parse(content));
     
     console.log('Recording loaded:', filename);
     return { success: true, recording };
@@ -253,7 +362,7 @@ ipcMain.handle('load-recording', async (event, filename) => {
 // Delete recording
 ipcMain.handle('delete-recording', async (event, filename) => {
   try {
-    const filePath = path.join(recordingsDir, filename);
+    const filePath = resolveRecordingPath(filename);
     fs.unlinkSync(filePath);
     
     console.log('Recording deleted:', filename);
@@ -282,12 +391,13 @@ ipcMain.handle('import-recording', async () => {
     
     const filePath = result.filePaths[0];
     const content = fs.readFileSync(filePath, 'utf8');
-    const recording = JSON.parse(content);
+    const recording = parseRecordingDocument(JSON.parse(content));
     
     // Copy to recordings directory
-    const filename = path.basename(filePath);
-    const destPath = path.join(recordingsDir, filename);
-    fs.copyFileSync(filePath, destPath);
+    const timestamp = Date.now();
+    const filename = `${recording.name.replace(/[^a-z0-9]/gi, '_')}_${timestamp}.json`;
+    const destPath = resolveRecordingPath(filename);
+    fs.writeFileSync(destPath, JSON.stringify(recording, null, 2));
     
     console.log('Recording imported:', filename);
     return { success: true, recording, filename };
