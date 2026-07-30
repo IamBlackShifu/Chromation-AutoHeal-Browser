@@ -299,11 +299,11 @@ npm start
 
 ## 📚 Documentation
 
-- **OhScrapper Features**: `docs/OHSCRAPPER_FEATURES.md`
+- **OhScrapper Features**: `OHSCRAPPER_FEATURES.md`
 - **Quick Reference**: `QUICK_REFERENCE.md`
-- **API Documentation**: `docs/API.md`
-- **Architecture**: `docs/ARCHITECTURE.md`
-- **Getting Started**: `docs/GETTING_STARTED.md`
+- **API Documentation**: `API.md`
+- **Architecture**: `ARCHITECTURE.md`
+- **Getting Started**: `GETTING_STARTED.md`
 
 ---
 
@@ -392,7 +392,7 @@ npm run dev
 
 For issues, questions, or feature requests:
 - Open an issue on GitHub
-- Check documentation in `docs/` folder
+- Check the documentation index in `README.md`
 - Review `QUICK_REFERENCE.md` for commands
 
 ---

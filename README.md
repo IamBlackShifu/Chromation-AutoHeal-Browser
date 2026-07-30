@@ -1,13 +1,17 @@
 # Chromation AutoHeal Browser
 
+New to test organization? See [Suites and Automation Workflows](docs/SUITES_AND_WORKFLOWS.md)
+for the complete record → organize → run → report workflow, matrix execution,
+tagging guidance, CLI examples, and troubleshooting.
+
 **Tagline:** *Browse. Inspect. Automate. Heal.*
 
 ## Overview
 
 Chromation AutoHeal Browser is a Chromium-engine-based automation browser purpose-built for QA Engineers, SDETs, and Automation Developers. It combines traditional browsing with deeply embedded automation tooling.
 
-> Development status: this is an active MVP. Verified behavior and remaining
-> work are tracked in [PENDING_CHECKLIST.md](PENDING_CHECKLIST.md), with runtime
+> Development status: this is a beta. Verified behavior and remaining
+> work are tracked in [docs/ROADMAP.md](docs/ROADMAP.md), with runtime
 > support defined in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md). Features
 > marked pending in the checklist are not production-ready. The latest
 > evidence-based reliability and product audit is in
@@ -220,7 +224,7 @@ npm run dev
 ## Roadmap
 
 For the prioritized, testable implementation backlog and UI modernization
-phases, see [PENDING_CHECKLIST.md](PENDING_CHECKLIST.md).
+phases, see [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ### MVP (Current)
 - ✅ Core architecture and module stubs

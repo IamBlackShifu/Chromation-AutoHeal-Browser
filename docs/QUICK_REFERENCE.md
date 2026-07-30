@@ -226,16 +226,16 @@ npm run build
 
 ### Next Steps
 
-1. **Read the docs**: Start with `docs/GETTING_STARTED.md`
+1. **Read the docs**: Start with `GETTING_STARTED.md`
 2. **Run the example**: Execute `example.ts` to see features in action
-3. **Explore the API**: Check `docs/API.md` for detailed reference
-4. **Understand architecture**: Read `docs/ARCHITECTURE.md`
+3. **Explore the API**: Check `API.md` for detailed reference
+4. **Understand architecture**: Read `ARCHITECTURE.md`
 5. **Contribute**: See `CONTRIBUTING.md` for guidelines
 
 ### Resources
 
 - **Repository**: https://github.com/IamBlackShifu/Chromation-AutoHeal-Browser
-- **Documentation**: `docs/` folder
+- **Documentation**: `README.md` in this folder
 - **Examples**: `example.ts`
 - **Tests**: `tests/` folder
 

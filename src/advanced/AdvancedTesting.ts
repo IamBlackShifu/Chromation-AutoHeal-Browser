@@ -132,16 +132,16 @@ export class AdvancedPageTesting {
     return { status, headers: response.headers(), body, durationMs: Date.now() - startedAt, passed };
   }
   async scanAccessibility(page: Page): Promise<AccessibilityResult> {
-    const issues = await page.evaluate(() => {
-      const selectorFor = (element: Element) => element.id ? `#${element.id}` : element.tagName.toLowerCase();
-      const output: AccessibilityIssue[] = [];
+    const issues = await page.evaluate(`(() => {
+      const selectorFor = (element) => element.id ? '#' + element.id : element.tagName.toLowerCase();
+      const output = [];
       document.querySelectorAll('img:not([alt])').forEach((element) => output.push({
         rule: 'image-alt', severity: 'serious', selector: selectorFor(element), message: 'Image is missing alt text',
       }));
       document.querySelectorAll('input,select,textarea').forEach((element) => {
         const id = element.getAttribute('id');
         const labelled = element.getAttribute('aria-label') || element.getAttribute('aria-labelledby') ||
-          (id && document.querySelector(`label[for="${CSS.escape(id)}"]`));
+          (id && document.querySelector('label[for="' + CSS.escape(id) + '"]'));
         if (!labelled) output.push({
           rule: 'form-label', severity: 'critical', selector: selectorFor(element), message: 'Form control has no accessible label',
         });
@@ -158,21 +158,21 @@ export class AdvancedPageTesting {
         });
       });
       return output;
-    });
+    })()`) as AccessibilityIssue[];
     const counts = { critical: 0, serious: 0, moderate: 0, minor: 0 };
     issues.forEach((issue) => counts[issue.severity]++);
     return { passed: counts.critical === 0 && counts.serious === 0, issues, counts };
   }
   async measurePerformance(page: Page, budgets: PerformanceBudgets): Promise<PerformanceResult> {
-    const metrics = await page.evaluate(() => {
-      const navigation = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
+    const metrics = await page.evaluate(`(() => {
+      const navigation = performance.getEntriesByType('navigation')[0];
       const paints = performance.getEntriesByType('paint');
       const fcp = paints.find((entry) => entry.name === 'first-contentful-paint')?.startTime ?? 0;
       const lcpEntries = performance.getEntriesByType('largest-contentful-paint');
       const lcp = lcpEntries.at(-1)?.startTime ?? 0;
-      const layoutEntries = performance.getEntriesByType('layout-shift') as Array<PerformanceEntry & { value?: number; hadRecentInput?: boolean }>;
+      const layoutEntries = performance.getEntriesByType('layout-shift');
       const cls = layoutEntries.filter((entry) => !entry.hadRecentInput).reduce((sum, entry) => sum + (entry.value ?? 0), 0);
-      const eventEntries = performance.getEntriesByType('event') as Array<PerformanceEntry & { duration: number; interactionId?: number }>;
+      const eventEntries = performance.getEntriesByType('event');
       const inp = Math.max(0, ...eventEntries.filter((entry) => entry.interactionId).map((entry) => entry.duration));
       return {
         loadMs: navigation?.loadEventEnd ?? 0,
@@ -181,7 +181,7 @@ export class AdvancedPageTesting {
         cumulativeLayoutShift: cls,
         interactionToNextPaintMs: inp,
       };
-    });
+    })()`) as PerformanceResult['metrics'];
     const violations = Object.entries(budgets).flatMap(([metric, budget]) => {
       const actual = metrics[metric as keyof typeof metrics];
       return budget !== undefined && actual > budget ? [{ metric, actual, budget }] : [];

@@ -79,47 +79,31 @@ export class HealingEngine {
   }
 
   async captureFingerprint(page: Page, selector: string): Promise<LocatorFingerprint> {
-    return page.locator(selector).first().evaluate((element) => {
-      const html = element as HTMLElement;
-      const attributes: Record<string, string> = {};
-      for (const name of [
-        'id',
-        'name',
-        'type',
-        'placeholder',
-        'title',
-        'aria-label',
-        'data-testid',
-        'data-test',
-        'data-qa',
-      ]) {
-        const value = element.getAttribute(name);
-        if (value) attributes[name] = value;
-      }
-
-      const domPath: string[] = [];
-      let current: Element | null = element;
-      while (current && domPath.length < 8) {
-        domPath.unshift(current.tagName.toLowerCase());
-        current = current.parentElement;
-      }
-      const rect = html.getBoundingClientRect();
-
-      return {
-        tagName: element.tagName.toLowerCase(),
-        attributes,
-        text: (element.textContent ?? '').trim().replace(/\s+/g, ' ').slice(0, 160),
-        accessibleName: element.getAttribute('aria-label') ?? undefined,
-        role: element.getAttribute('role') ?? undefined,
-        domPath,
-        boundingBox: {
-          x: rect.x,
-          y: rect.y,
-          width: rect.width,
-          height: rect.height,
-        },
-      };
-    });
+    const locator = page.locator(selector).first();
+    const names = ['id', 'name', 'type', 'placeholder', 'title', 'aria-label', 'data-testid', 'data-test', 'data-qa'];
+    const values = await Promise.all(names.map((name) => locator.getAttribute(name)));
+    const attributes = Object.fromEntries(names.flatMap((name, index) =>
+      values[index] ? [[name, values[index] as string]] : []
+    ));
+    const handle = await locator.elementHandle();
+    const tagProperty = await handle?.getProperty('tagName');
+    const liveTagName = await tagProperty?.jsonValue();
+    await tagProperty?.dispose();
+    await handle?.dispose();
+    const tagName = typeof liveTagName === 'string'
+      ? liveTagName.toLowerCase()
+      : selector.match(/^[a-z][\w-]*/i)?.[0]?.toLowerCase() ?? '*';
+    const text = ((await locator.textContent()) ?? '').trim().replace(/\s+/g, ' ').slice(0, 160);
+    const rect = await locator.boundingBox();
+    return {
+      tagName,
+      attributes,
+      text,
+      accessibleName: attributes['aria-label'],
+      role: await locator.getAttribute('role') ?? undefined,
+      domPath: [tagName],
+      boundingBox: rect ? { x: rect.x, y: rect.y, width: rect.width, height: rect.height } : undefined,
+    };
   }
 
   async healLocator(
@@ -231,18 +215,18 @@ export class HealingEngine {
   }
 
   private async collectCandidates(page: Page): Promise<Array<{ selector: string; fingerprint: LocatorFingerprint }>> {
-    return page.evaluate((maximum) => {
-      const escape = (value: string): string => {
+    return page.evaluate(`((maximum) => {
+      const escape = (value) => {
         const css = globalThis.CSS;
         return css?.escape ? css.escape(value) : value.replace(/[^a-zA-Z0-9_-]/g, '\\$&');
       };
-      const pathFor = (element: Element): string[] => {
-        const path: string[] = [];
-        let current: Element | null = element;
+      const pathFor = (element) => {
+        const path = [];
+        let current = element;
         while (current && path.length < 8) {
           let part = current.tagName.toLowerCase();
           if (current.id) {
-            part += `#${escape(current.id)}`;
+            part += '#' + escape(current.id);
             path.unshift(part);
             break;
           }
@@ -251,34 +235,34 @@ export class HealingEngine {
         }
         return path;
       };
-      const selectorFor = (element: Element, index: number): string => {
+      const selectorFor = (element, index) => {
         const testAttribute = ['data-testid', 'data-test', 'data-qa'].find((name) =>
           element.hasAttribute(name)
         );
         if (testAttribute) {
-          return `[${testAttribute}="${escape(element.getAttribute(testAttribute) ?? '')}"]`;
+          return '[' + testAttribute + '="' + escape(element.getAttribute(testAttribute) ?? '') + '"]';
         }
         if (element.id) {
-          return `#${escape(element.id)}`;
+          return '#' + escape(element.id);
         }
-        return `[data-chromation-healing-id="${index}"]`;
+        return '[data-chromation-healing-id="' + index + '"]';
       };
 
       return Array.from(document.querySelectorAll('body *'))
         .filter((element) => {
-          const html = element as HTMLElement;
+          const html = element;
           const rect = html.getBoundingClientRect();
           const style = getComputedStyle(html);
           return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
         })
         .slice(0, maximum)
         .map((element, index) => {
-          const html = element as HTMLElement;
+          const html = element;
           const selector = selectorFor(element, index);
           if (selector.startsWith('[data-chromation-healing-id=')) {
             element.setAttribute('data-chromation-healing-id', String(index));
           }
-          const attributes: Record<string, string> = {};
+          const attributes = {};
           for (const name of ['id', 'name', 'type', 'placeholder', 'title', 'aria-label', 'data-testid', 'data-test', 'data-qa']) {
             const value = element.getAttribute(name);
             if (value) attributes[name] = value;
@@ -289,7 +273,7 @@ export class HealingEngine {
             fingerprint: {
               tagName: element.tagName.toLowerCase(),
               attributes,
-              text: (element.textContent ?? '').trim().replace(/\s+/g, ' ').slice(0, 160),
+              text: (element.textContent ?? '').trim().replace(/\\s+/g, ' ').slice(0, 160),
               accessibleName: element.getAttribute('aria-label') ?? undefined,
               role: element.getAttribute('role') ?? undefined,
               domPath: pathFor(element),
@@ -297,7 +281,7 @@ export class HealingEngine {
             },
           };
         });
-    }, this.maxCandidates);
+    })(${this.maxCandidates})`) as Promise<Array<{ selector: string; fingerprint: LocatorFingerprint }>>;
   }
 
   private scoreCandidate(

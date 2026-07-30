@@ -923,15 +923,30 @@ async function initializeAdvancedP2Controls() {
 async function initializeSuiteControls() {
   if (!suiteManager) return;
   const select = document.getElementById('suite-select');
+  const summary = document.getElementById('suite-selection-summary');
+  let suites = [];
+  const renderSelection = () => {
+    if (!summary) return;
+    const suite = suites.find((item) => item.id === select?.value);
+    if (!suite) {
+      summary.innerHTML = '<span>No suite selected</span><small>Create or choose a suite to add and run tests.</small>';
+      return;
+    }
+    const tags = suite.tags || [];
+    summary.innerHTML = `<strong>${escapeReportText(suite.name)}</strong><span>${suite.tests.length} test${suite.tests.length === 1 ? '' : 's'} · ${tags.length ? tags.map((tag) => `#${escapeReportText(tag)}`).join(' ') : 'No tags'}</span>${suite.tests.length ? `<small>${suite.tests.map((test) => escapeReportText(test.name)).join(' · ')}</small>` : '<small>Add the current recording as the first test.</small>'}`;
+  };
   const refresh = async () => {
     if (!select) return;
-    const suites = await suiteManager.list();
+    suites = await suiteManager.list();
     const selected = select.value;
     select.innerHTML = '<option value="">Select a suite</option>' + suites.map((suite) =>
       `<option value="${escapeReportText(suite.id)}">${escapeReportText(suite.name)} (${suite.tests.length})</option>`
     ).join('');
     select.value = selected;
+    renderSelection();
   };
+  select?.addEventListener('change', renderSelection);
+  document.getElementById('suite-help-btn')?.addEventListener('click', () => showHelp('suite'));
   document.getElementById('create-suite-btn')?.addEventListener('click', async () => {
     const name = document.getElementById('suite-name')?.value.trim();
     const tags = String(document.getElementById('suite-tags')?.value || '').split(',').map((tag) => tag.trim()).filter(Boolean);
@@ -945,13 +960,16 @@ async function initializeSuiteControls() {
     const name = document.getElementById('suite-test-name')?.value.trim();
     const tags = String(document.getElementById('suite-test-tags')?.value || '').split(',').map((tag) => tag.trim()).filter(Boolean);
     if (!select?.value || !name) return showToast('Select a suite and enter a test name', 'error');
-    await suiteManager.addTest(select.value, { name, tags, enabled: true, actions: await recorder.getActions() });
+    const actions = await recorder.getActions();
+    if (!actions.length) return showToast('Record or load a test before adding it to a suite', 'warning');
+    await suiteManager.addTest(select.value, { name, tags, enabled: true, actions });
     await refresh();
     showToast(`Test ${name} added`, 'success');
   });
   document.getElementById('run-suite-matrix-btn')?.addEventListener('click', async () => {
     if (!select?.value) return showToast('Select a suite', 'error');
     const selectedSuite = (await suiteManager.list()).find((suite) => suite.id === select.value);
+    if (!selectedSuite?.tests?.length) return showToast('Add at least one test before running this suite', 'warning');
     const browsers = String(document.getElementById('matrix-browsers')?.value || 'chrome').split(',').map((item) => item.trim()).filter(Boolean);
     const concurrency = Number(document.getElementById('matrix-concurrency')?.value || 2);
     const summary = document.getElementById('matrix-run-summary');
@@ -960,6 +978,20 @@ async function initializeSuiteControls() {
     if (summary) summary.textContent = `${run.summary.total} jobs · ${run.summary.passed} passed · ${run.summary.failed} failed · ${run.durationMs}ms`;
   });
   refresh();
+}
+
+function showSuitesWorkspace() {
+  showBrowseWorkspace();
+  sidePanel.dataset.currentTool = 'suites';
+  showRecorderPanel();
+  panelTitle.textContent = 'Suites';
+  setActiveRailAction('suites');
+  sidePanel.classList.add('open');
+  const section = document.getElementById('suite-builder-section');
+  if (section) {
+    section.open = true;
+    requestAnimationFrame(() => section.scrollIntoView({ block: 'start', behavior: 'smooth' }));
+  }
 }
 
 // Recorder Panel
@@ -1099,6 +1131,7 @@ function startRecording(mode) {
   isRecording = true;
   recorder.startRecording(mode);
   recordedActions = [];
+  currentRecordingFilename = null;
   
   // Automatically record the current URL as the first action
   const currentUrl = browserWebview.getURL();
@@ -1728,7 +1761,9 @@ function getActionIcon(type) {
 function updateReplayEngineGuidance(engine) {
   const target = document.getElementById('replay-engine-guidance');
   if (!target) return;
-  target.innerHTML = engine === 'playwright'
+  target.innerHTML = engine === 'auto'
+    ? '<strong>Auto selection</strong><span>Uses the current tab for smooth interactive flows and switches to Playwright only when a step needs its advanced capabilities.</span>'
+    : engine === 'playwright'
     ? '<strong>Playwright Executor</strong><span>Best for CI, frames, evidence, APIs, visual checks, accessibility, and performance. Opens an executor-controlled browser context.</span>'
     : '<strong>In-Browser Replay</strong><span>Fastest for interactive debugging in the current tab. Advanced steps and some cross-origin/frame scenarios require Playwright.</span>';
 }
@@ -2164,6 +2199,8 @@ let replayEndedAt = 0;
 let lastReplayExecutionReport = null;
 let lastReplayExecution = null;
 let latestReportViewModel = null;
+let currentRecordingFilename = null;
+let pendingRerunComparison = null;
 
 function updateReplayButton() {
   const replayBtn = document.getElementById('replay-record-btn');
@@ -2177,6 +2214,8 @@ async function replayActions(speed = 1.0, engine = 'webview', policy = { timeout
   if (!recorder || isReplaying || isRecording) return;
   
   const actions = recorder.getActions();
+  const requestedEngine = engine;
+  engine = resolveReplayEngine(engine, actions);
   let replayTerminalState = 'passed';
   if (actions.length === 0) {
     statusText.textContent = 'No actions to replay';
@@ -2209,6 +2248,9 @@ async function replayActions(speed = 1.0, engine = 'webview', policy = { timeout
   statusText.textContent = engine === 'playwright'
     ? `Running ${actions.length} actions with Playwright executor...`
     : `Replaying ${actions.length} actions at ${speed}x speed...`;
+  if (requestedEngine === 'auto') {
+    showToast(`Auto selected ${engine === 'playwright' ? 'Playwright' : 'In-Browser Replay'}`, 'info');
+  }
   
   try {
     if (engine === 'playwright') {
@@ -2339,8 +2381,11 @@ async function replayActionsWithExecutor(actions, policy) {
     throw new Error('ScriptExecutor replay is not available in this build. Please restart the app.');
   }
 
+  const initialPageState = await captureInteractivePageState();
   const { execution, report } = await chromationBrowser.executeRecordedActionsWithReport('Recorder Replay', {
     headless: false,
+    reuseBrowser: true,
+    initialPageState,
     continueOnFailure: policy.continueOnFailure,
     defaultStepTimeoutMs: policy.timeoutMs,
     globalTimeoutMs: Math.max(
@@ -2358,6 +2403,8 @@ async function replayActionsWithExecutor(actions, policy) {
       captureDomSnapshotOnFailure: true,
     },
   });
+  report.sourceRecordingFilename = currentRecordingFilename;
+  report.replayEngine = 'playwright';
 
   replayReport = {
     total: execution.summary.total,
@@ -2391,6 +2438,32 @@ async function replayActionsWithExecutor(actions, policy) {
   }
 }
 
+async function captureInteractivePageState() {
+  try {
+    const url = browserWebview?.getURL?.() || '';
+    if (!/^https?:\/\//i.test(url)) return {};
+    const state = await browserWebview.executeJavaScript(`({
+      cookies: document.cookie,
+      localStorage: Object.fromEntries(Object.entries(localStorage)),
+      sessionStorage: Object.fromEntries(Object.entries(sessionStorage))
+    })`);
+    return { url, ...state };
+  } catch (error) {
+    console.warn('Could not mirror the active tab state into Playwright:', error);
+    return { url: browserWebview?.getURL?.() || '' };
+  }
+}
+
+function resolveReplayEngine(engine, actions) {
+  if (engine !== 'auto') return engine;
+  const playwrightOnly = new Set(['visual', 'api', 'mockNetwork', 'accessibility', 'performance', 'plugin']);
+  return actions.some((action) =>
+    playwrightOnly.has(action.type) ||
+    action.locatorFingerprint?.frameContext?.length ||
+    action.locatorFingerprint?.shadowHostChain?.length
+  ) ? 'playwright' : 'webview';
+}
+
 function buildWebviewExecutionReport() {
   const results = [...replayReport.passed, ...replayReport.failed].sort((left, right) => left.index - right.index);
   return {
@@ -2416,6 +2489,8 @@ function buildWebviewExecutionReport() {
     healingEvents: results.filter((item) => item.healing).length,
     healingDetails: results.map((item) => item.healing).filter(Boolean),
     environment: { runtime: 'electron-webview', headless: false },
+    sourceRecordingFilename: currentRecordingFilename,
+    replayEngine: 'webview',
   };
 }
 
@@ -3298,6 +3373,7 @@ const phase1Commands = [
   { label: 'Browse current page', hint: 'Return to browser', shortcut: '', run: () => showBrowseWorkspace() },
   { label: 'Open Inspector', hint: 'Discover resilient locators', shortcut: 'Ctrl+Shift+I', run: () => toggleTool('inspector') },
   { label: 'Open Recorder', hint: 'Capture a browser flow', shortcut: 'Ctrl+Shift+R', run: () => toggleTool('recorder') },
+  { label: 'Open Suites', hint: 'Organize recordings and run browser matrices', shortcut: '', run: () => showSuitesWorkspace() },
   { label: 'Replay current recording', hint: 'Run captured actions', shortcut: 'Ctrl+Enter', run: () => replayActions() },
   { label: 'Open Scraper', hint: 'Extract structured page data', shortcut: 'Ctrl+Shift+S', run: () => toggleTool('scraper') },
   { label: 'Open Reports', hint: 'Review execution history', shortcut: 'Ctrl+Shift+P', run: () => showRunHistoryPanel() },
@@ -3384,7 +3460,12 @@ function renderHomeRecordings(recordings) {
       <div class="recording-row-actions">
         <button class="home-replay-recording" data-filename="${filename}" title="Replay recording" aria-label="Replay ${escapeReportText(name)}">▶</button>
         <button class="home-rename-recording" data-filename="${filename}" data-name="${escapeReportText(name)}" title="Rename recording" aria-label="Rename ${escapeReportText(name)}">✎</button>
-        <button class="home-delete-recording" data-filename="${filename}" title="Delete recording" aria-label="Delete ${escapeReportText(name)}">⋯</button>
+        <button class="home-delete-recording danger-icon-btn" data-filename="${filename}" title="Delete recording" aria-label="Delete ${escapeReportText(name)}">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <polyline points="3 6 5 6 21 6"></polyline>
+            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+          </svg>
+        </button>
       </div>
     </article>`;
   }).join('');
@@ -3496,9 +3577,9 @@ let nextTabId = 2;
 // Initialize first tab
 tabs.push({
   id: 1,
-  title: 'New Tab',
+  title: 'Workspace',
   url: 'https://duckduckgo.com',
-  uiState: { workspace: 'browse', activeTool: null, panelOpen: false, panelScrollTop: 0 },
+  uiState: { workspace: 'home', activeTool: null, panelOpen: false, panelScrollTop: 0 },
   favicon: '🦆'
 });
 
@@ -3925,6 +4006,8 @@ function openHistoricalReport(report) {
     consoleLogs: report.consoleLogs || [],
     networkSummary: report.networkLogs || [],
     runError: null,
+    sourceRecordingFilename: report.sourceRecordingFilename || null,
+    replayEngine: report.replayEngine || 'webview',
   };
   lastReplayExecutionReport = report;
   const existing = tabs.find((tab) => tab.type === 'report' && tab.runId === latestReportViewModel.runId);
@@ -4085,14 +4168,18 @@ const inAppHelpTopics = [
   { title: 'Keyboard shortcuts', category: 'Reference', keywords: 'keys commands ctrl', body: 'Ctrl+K Commands · Ctrl+Shift+R Recorder · Ctrl+Shift+I Inspector · Ctrl+Shift+S Scraper · Ctrl+Shift+P Reports · Ctrl+H History · Ctrl+Enter Replay · Escape Close.' },
   { title: 'File uploads', category: 'Actions', keywords: 'upload file chooser device', body: 'Recorded uploads store file metadata. At replay time Chromation validates that the local file still exists before assigning it to the file input.' },
   { title: 'Variables and environments', category: 'Authoring', keywords: 'test data binding secret base url', body: 'Use {{variableName}} in values, URLs, selectors, and assertions. Store secrets in the encrypted environment vault and non-secret values in environment profiles.' },
+  { title: 'How suites work', category: 'Suites', keywords: 'suite organize tests group recording workflow', body: 'A suite groups named copies of recorded tests. Open Suites, create or select a suite, load a recording, name the test, and add the current recording.' },
+  { title: 'Run a browser matrix', category: 'Suites', keywords: 'matrix browsers concurrency chrome edge jobs parallel', body: 'Enter comma-separated browsers and a safe concurrency limit. Each test and browser combination becomes a job; start with concurrency 1 or 2 for local diagnosis.' },
+  { title: 'Suite naming and tags', category: 'Suites', keywords: 'tags smoke critical naming filter cli', body: 'Name suites by product area or purpose, tests by observable behavior, and tags by selection or policy such as smoke, critical, mobile, or slow.' },
+  { title: 'Suite troubleshooting', category: 'Suites', keywords: 'no jobs select suite enabled source recording fail', body: 'If no jobs run, verify the suite is selected, contains enabled tests, and is not excluded by tags. Use Diagnostics when a browser worker cannot start.' },
 ];
 
-function showHelp() {
+function showHelp(initialQuery = '') {
   showBrowseWorkspace();
   panelTitle.textContent = 'Help & Guidance';
   panelContent.innerHTML = `<div class="tool-panel help-center">
-    <div class="help-hero"><p class="eyebrow">CHROMATION GUIDE</p><h3>How can we help?</h3><p>Search workflows, capabilities, and shortcuts.</p><input id="help-search" class="form-input" type="search" placeholder="Search help…"></div>
-    <div class="help-quick-actions"><button id="restart-onboarding">Replay onboarding</button><button id="open-diagnostics">Open diagnostics</button><button data-open-tool="recorder">Open Recorder</button></div>
+    <div class="help-hero"><p class="eyebrow">CHROMATION GUIDE</p><h3>How can we help?</h3><p>Search workflows, capabilities, and shortcuts.</p><input id="help-search" class="form-input" type="search" value="${escapeReportText(initialQuery)}" placeholder="Search help…"></div>
+    <div class="help-quick-actions"><button id="restart-onboarding">Replay onboarding</button><button id="open-diagnostics">Open diagnostics</button><button id="open-suites-help">Open Suites</button><button data-open-tool="recorder">Open Recorder</button></div>
     <div id="help-results">${renderHelpTopics(inAppHelpTopics)}</div>
   </div>`;
   sidePanel.dataset.currentTool = 'help';
@@ -4104,6 +4191,8 @@ function showHelp() {
   });
   document.getElementById('restart-onboarding')?.addEventListener('click', () => openOnboarding(true));
   document.getElementById('open-diagnostics')?.addEventListener('click', showDiagnostics);
+  document.getElementById('open-suites-help')?.addEventListener('click', showSuitesWorkspace);
+  if (initialQuery) document.getElementById('help-search')?.dispatchEvent(new Event('input'));
 }
 
 function renderHelpTopics(topics) {
@@ -4317,6 +4406,7 @@ async function saveRecording() {
     const result = await ipcRenderer.invoke('save-recording', { name, actions });
     
     if (result.success) {
+      currentRecordingFilename = result.filename;
       statusText.textContent = `Recording "${name}" saved successfully`;
       // Show notification
       showNotification('✅ Recording saved!', `${actions.length} actions saved to ${result.filename}`);
@@ -4345,6 +4435,7 @@ async function importRecording() {
         const actions = normalizeRecordedActions(result.recording.actions);
         recorder.setActions(actions);
         recordedActions = actions;
+        currentRecordingFilename = result.filename || null;
         updateActionsDisplay();
         statusText.textContent = `Imported recording: ${result.recording.name}`;
         showNotification('✅ Recording imported!', `${result.recording.actions.length} actions loaded`);
@@ -4473,6 +4564,7 @@ async function loadRecording(filename) {
         const actions = normalizeRecordedActions(result.recording.actions);
         recorder.setActions(actions);
         recordedActions = actions;
+        currentRecordingFilename = filename;
         
         // Switch to recorder panel
         sidePanel.classList.remove('open');
@@ -4481,19 +4573,23 @@ async function loadRecording(filename) {
         
         statusText.textContent = `Loaded: ${result.recording.name}`;
         showNotification('✅ Recording loaded!', `${result.recording.actions.length} actions ready`);
+        return true;
       }
     }
+    return false;
   } catch (error) {
     console.error('Load error:', error);
     statusText.textContent = 'Failed to load recording';
+    return false;
   }
 }
 
-async function loadAndReplayRecording(filename) {
-  await loadRecording(filename);
+async function loadAndReplayRecording(filename, engine = 'webview') {
+  const loaded = await loadRecording(filename);
+  if (!loaded) return;
   // Wait a bit for the UI to update
   setTimeout(() => {
-    replayActions(1.0);
+    replayActions(1.0, engine);
   }, 500);
 }
 
@@ -4654,7 +4750,7 @@ function buildReplayReportViewModel() {
   const healed = steps.filter((step) => Boolean(step.healing)).length;
   const durationMs = lastReplayExecution?.durationMs ??
     Math.max(0, (replayEndedAt || Date.now()) - (replayStartedAt || Date.now()));
-  return {
+  const viewModel = {
     runId: lastReplayExecution?.runId || `replay_${replayStartedAt || Date.now()}`,
     status: lastReplayExecution?.finalState || (failed > 0 ? 'failed' : 'passed'),
     startedAt: lastReplayExecution?.startedAt || replayStartedAt,
@@ -4670,7 +4766,57 @@ function buildReplayReportViewModel() {
     consoleLogs: lastReplayExecution?.consoleLogs || [],
     networkSummary: lastReplayExecution?.networkSummary || [],
     runError: lastReplayExecution?.runError || null,
+    sourceRecordingFilename: currentRecordingFilename,
+    replayEngine: currentReplayEngine || lastReplayExecutionReport?.replayEngine || 'webview',
   };
+  if (pendingRerunComparison) {
+    viewModel.comparison = compareReplayReports(pendingRerunComparison, viewModel);
+    pendingRerunComparison = null;
+  }
+  return viewModel;
+}
+
+function compareReplayReports(previous, current) {
+  return {
+    previousRunId: previous.runId,
+    statusChanged: previous.status !== current.status,
+    previousStatus: previous.status,
+    currentStatus: current.status,
+    passRateDelta: Number((current.passRate - previous.passRate).toFixed(1)),
+    failedDelta: current.failed - previous.failed,
+    healedDelta: current.healed - previous.healed,
+    durationDeltaMs: current.durationMs - previous.durationMs,
+  };
+}
+
+async function rerunReport(report) {
+  if (isReplaying) {
+    showToast('A replay is already running', 'warning');
+    return;
+  }
+  pendingRerunComparison = {
+    runId: report.runId,
+    status: report.status,
+    passRate: report.passRate,
+    failed: report.failed,
+    healed: report.healed,
+    durationMs: report.durationMs,
+  };
+  if (report.sourceRecordingFilename) {
+    const loaded = await loadRecording(report.sourceRecordingFilename);
+    if (!loaded) {
+      pendingRerunComparison = null;
+      showToast('The source recording is no longer available', 'error');
+      return;
+    }
+  } else if (!recorder?.getActions?.().length) {
+    pendingRerunComparison = null;
+    showToast('Load the source recording before rerunning this older report', 'warning');
+    return;
+  }
+  showBrowseWorkspace();
+  showToast('Rerun started', 'info');
+  await replayActions(1, report.replayEngine || 'webview');
 }
 
 function showReplayReport() {
@@ -4872,6 +5018,7 @@ document.addEventListener('DOMContentLoaded', () => {
   applyVisualPreferences();
   initChromation();
   bindOnboarding();
+  showHomeWorkspace();
   setTimeout(() => openOnboarding(), 700);
   window.addEventListener('chromation-remediation', (event) => {
     const { action, stepIndex, query } = event.detail || {};
@@ -4886,6 +5033,9 @@ document.addEventListener('DOMContentLoaded', () => {
     sidePanel.classList.remove('open');
     toggleTool('recorder');
     if (Number.isInteger(stepIndex) && recorder?.getActions?.()[stepIndex]) openStepEditor(stepIndex);
+  });
+  window.addEventListener('chromation-rerun-report', (event) => {
+    if (event.detail?.report) rerunReport(event.detail.report);
   });
   updatePhase1Badges();
   document.getElementById('execution-pause')?.addEventListener('click', pauseReplay);
@@ -4916,6 +5066,7 @@ document.addEventListener('DOMContentLoaded', () => {
     button.addEventListener('click', () => {
       if (button.dataset.tool) toggleTool(button.dataset.tool);
       if (button.dataset.workspace === 'browse') showHomeWorkspace();
+      if (button.dataset.action === 'suites') showSuitesWorkspace();
       if (button.dataset.action === 'replay') { showBrowseWorkspace(); replayActions(); }
       if (button.dataset.action === 'reports') showRunHistoryPanel();
       if (button.dataset.action === 'settings') {
@@ -4936,6 +5087,13 @@ document.addEventListener('DOMContentLoaded', () => {
     if (action === 'inspect') { showBrowseWorkspace(); toggleTool('inspector'); }
     if (action === 'recordings') { showBrowseWorkspace(); showSavedRecordings(); }
     if (action === 'reports') showRunHistoryPanel();
+  }));
+  document.querySelectorAll('[data-workflow-destination]').forEach((button) => button.addEventListener('click', () => {
+    const destination = button.dataset.workflowDestination;
+    if (destination === 'record') { showBrowseWorkspace(); toggleTool('recorder'); }
+    if (destination === 'suites') showSuitesWorkspace();
+    if (destination === 'run') showSuitesWorkspace();
+    if (destination === 'reports') showRunHistoryPanel();
   }));
   document.getElementById('command-input')?.addEventListener('input', (event) => { commandSelection = 0; renderCommandResults(event.target.value); });
   document.getElementById('command-palette')?.addEventListener('click', (event) => {

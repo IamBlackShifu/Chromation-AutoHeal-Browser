@@ -5,6 +5,31 @@ All notable changes to Chromation AutoHeal Browser will be documented in this fi
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0-beta.1] - 2026-07-30
+
+### Added
+
+- Workspace Home, labeled tool rail, command palette, and guided product workflow
+- Reliable recorder actions, locator fingerprints, healing, and replay controls
+- Auto, in-browser, and Playwright replay-engine choices
+- Suites, matrix execution, CLI runs, schedules, remote execution primitives,
+  advanced test steps, and plugin SDK
+- Actionable report workspace, history, analytics, evidence, exports, and rerun comparison
+- Searchable help, onboarding, diagnostics, browsing history, and suite guidance
+
+### Improved
+
+- Playwright state fidelity and warm-browser reuse for smoother interactive runs
+- Electron-safe Playwright browser evaluation
+- File upload, input recording, report screenshots, and dynamic locator handling
+- UI navigation, responsive controls, themes, density, and accessibility
+
+### Known limitations
+
+- Replay-engine action parity and Electron end-to-end coverage remain incomplete.
+- See [Beta Release Notes](docs/BETA_RELEASE_NOTES.md) and the
+  [Robustness and UX Audit](docs/ROBUSTNESS_UX_AUDIT_CHECKLIST.md).
+
 ## [0.1.0] - 2026-02-16
 
 ### Added

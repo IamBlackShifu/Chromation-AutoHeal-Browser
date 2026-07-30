@@ -18,7 +18,7 @@ criteria pass in CI or an explicitly documented manual test.
 
 ## Audit snapshot
 
-- 20 Jest suites and 106 tests pass.
+- 20 Jest suites and 110 tests pass.
 - Coverage: 72.08% statements, 52.8% branches, 75.43% functions, and 75.63% lines.
 - CI runs lint, coverage, and build on Node 20.
 - The TypeScript executor is 1,134 lines.

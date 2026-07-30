@@ -19,7 +19,12 @@ describe('In-product user guidance', () => {
   test('explains replay engines and provides searchable help', () => {
     expect(html).toContain('id="replay-engine-guidance"');
     expect(renderer).toContain('function updateReplayEngineGuidance(engine)');
+    expect(html).toContain('<option value="auto" selected>Auto (recommended)</option>');
+    expect(renderer).toContain('function resolveReplayEngine(engine, actions)');
+    expect(renderer).toContain('async function captureInteractivePageState()');
     expect(renderer).toContain('const inAppHelpTopics = [');
+    expect(renderer).toContain("title: 'How suites work'");
+    expect(renderer).toContain("title: 'Run a browser matrix'");
     expect(renderer).toContain("event.key === 'F1'");
     expect(renderer).toContain("'Help & Shortcuts'");
   });

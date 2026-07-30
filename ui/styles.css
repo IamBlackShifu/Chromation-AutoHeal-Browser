@@ -1016,11 +1016,44 @@ body {
 .recording-row:hover .recording-row-actions, .recording-row:focus-within .recording-row-actions { opacity: 1; }
 .recording-row-actions button { width: 31px; height: 31px; display: grid; place-items: center; border: 0; border-radius: 8px; background: transparent; color: var(--text-secondary); cursor: pointer; }
 .recording-row-actions button:hover { color: var(--accent-color); background: var(--btn-secondary-active); }
+.recording-row-actions .danger-icon-btn:hover { color: var(--danger-color); background: color-mix(in srgb, var(--danger-color) 12%, transparent); }
 .home-empty { padding: 22px 12px; text-align: center; color: var(--text-secondary); }
 .home-empty > span { display: grid; place-items: center; width: 40px; height: 40px; margin: 0 auto 9px; border-radius: 12px; color: var(--accent-color); background: color-mix(in srgb, var(--accent-color) 12%, transparent); }
 .home-empty strong { display: block; color: var(--text-primary); margin-bottom: 5px; }
 .home-empty p { font-size: 12px; margin-bottom: 11px; }
 .home-empty button { border: 0; background: transparent; color: var(--accent-color); font-weight: 650; cursor: pointer; }
+
+.workflow-path {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0 0 18px;
+}
+
+.workflow-path button {
+  position: relative;
+  display: grid;
+  grid-template-columns: 30px 1fr;
+  gap: 2px 9px;
+  align-items: center;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.workflow-path button:hover { border-color: var(--accent-color); transform: translateY(-1px); }
+.workflow-path button > span { grid-row: 1 / 3; display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: color-mix(in srgb, var(--accent-color) 12%, transparent); color: var(--accent-color); font-weight: 750; }
+.workflow-path strong { font-size: 13px; }
+.workflow-path small { min-width: 0; overflow: hidden; color: var(--text-tertiary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+
+@media (max-width: 900px) {
+  .workflow-path { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 
 .save-dialog-backdrop { position: fixed; inset: 0; z-index: 1100; display: grid; place-items: center; padding: 20px; background: rgba(20,24,32,.58); backdrop-filter: blur(3px); }
 .save-dialog { width: min(470px, 100%); display: grid; gap: 13px; padding: 25px; border: 1px solid var(--border-color); border-radius: 16px; background: var(--panel-bg); box-shadow: 0 24px 70px rgba(0,0,0,.3); }
@@ -1291,6 +1324,60 @@ kbd { padding: 3px 7px; border: 1px solid var(--border-color); border-radius: 5p
   text-transform: uppercase;
 }
 
+.report-hero-actions {
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 12px;
+}
+
+.report-rerun-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 8px 14px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.report-rerun-btn:hover {
+  border-color: var(--accent-color);
+  color: var(--accent-color);
+  background: color-mix(in srgb, var(--accent-color) 7%, var(--bg-primary));
+}
+
+.rerun-comparison {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(110px, 1fr));
+  gap: 1px;
+  margin: 0 0 20px;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  background: var(--border-color);
+}
+
+.rerun-comparison > div {
+  display: grid;
+  gap: 5px;
+  padding: 13px;
+  background: var(--bg-primary);
+}
+
+.rerun-comparison span { color: var(--text-tertiary); font-size: 11px; }
+.rerun-comparison strong { color: var(--text-primary); font-size: 13px; overflow-wrap: anywhere; }
+.rerun-comparison strong.changed { color: var(--warning-color); }
+
+@media (max-width: 900px) {
+  .rerun-comparison { grid-template-columns: repeat(3, minmax(110px, 1fr)); }
+}
+
 .report-metrics {
   display: grid;
   grid-template-columns: repeat(6, minmax(100px, 1fr));
@@ -1466,6 +1553,15 @@ kbd { padding: 3px 7px; border: 1px solid var(--border-color); border-radius: 5p
 .assertion-comparison span { display: block; color: var(--text-secondary); font-size: 11px; text-transform: uppercase; }
 .assertion-comparison code { display: block; margin-top: 4px; overflow-wrap: anywhere; }
 .project-summary { white-space: pre-wrap; max-height: 120px; overflow: auto; font-size: 11px; color: var(--text-secondary); }
+.suite-helper { display: grid; gap: 6px; padding: 12px; border: 1px solid color-mix(in srgb, var(--accent-color) 25%, var(--border-color)); border-radius: var(--radius-md); background: color-mix(in srgb, var(--accent-color) 6%, var(--bg-primary)); }
+.suite-helper strong { color: var(--text-primary); }
+.suite-helper p { color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
+.suite-helper button { justify-self: start; padding: 0; border: 0; background: transparent; color: var(--accent-color); font-weight: 650; cursor: pointer; }
+.workflow-field { display: grid; gap: 7px; margin-top: 12px; }
+.workflow-field > span { color: var(--text-secondary); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.suite-selection-summary { display: grid; gap: 4px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: var(--radius-md); background: var(--bg-secondary); }
+.suite-selection-summary strong { color: var(--text-primary); }
+.suite-selection-summary span, .suite-selection-summary small { color: var(--text-secondary); font-size: 11px; line-height: 1.45; }
 .p1-authoring-card summary { cursor: pointer; list-style: none; }
 .locator-quality-row { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 10px; color: var(--text-secondary); }
 .plugin-card { padding: 12px 0; border-bottom: 1px solid var(--border-color); }

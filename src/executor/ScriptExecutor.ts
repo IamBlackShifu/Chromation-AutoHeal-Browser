@@ -62,6 +62,8 @@ export class ScriptExecutor {
     consumedBreakpoints: Set<number>;
     waiters: Array<() => void>;
   } | null = null;
+  private reusableBrowser: Browser | null = null;
+  private reusableBrowserTimer: NodeJS.Timeout | null = null;
   private stateSnapshot: ExecutionStateSnapshot = {
     state: 'idle',
     currentStep: -1,
@@ -114,13 +116,20 @@ export class ScriptExecutor {
 
     try {
       this.validateActions(actions);
-      browser = await this.browserType.launch({
-        headless: resolved.headless,
-        executablePath: resolved.executablePath || undefined,
-        channel: resolved.executablePath ? undefined : resolved.channel,
-      });
+      browser = resolved.reuseBrowser && this.reusableBrowser?.isConnected()
+        ? this.reusableBrowser
+        : await this.browserType.launch({
+          headless: resolved.headless,
+          executablePath: resolved.executablePath || undefined,
+          channel: resolved.executablePath ? undefined : resolved.channel,
+        });
+      if (resolved.reuseBrowser) {
+        this.reusableBrowser = browser;
+        if (this.reusableBrowserTimer) clearTimeout(this.reusableBrowserTimer);
+      }
       context = await browser.newContext(resolved.evidence.captureVideo && resolved.evidence.artifactDirectory
         ? { recordVideo: { dir: resolved.evidence.artifactDirectory } } : {});
+      await this.applyInitialPageState(context, resolved.initialPageState);
       if (resolved.evidence.captureTrace && resolved.evidence.artifactDirectory && context.tracing) {
         await context.tracing.start({ screenshots: true, snapshots: true });
       }
@@ -129,6 +138,16 @@ export class ScriptExecutor {
         context?.close().catch(() => undefined);
       }, { once: true });
       page = await context.newPage();
+      if (
+        resolved.initialPageState.url &&
+        !actions.some((action) => action.type === 'navigate') &&
+        /^https?:\/\//i.test(resolved.initialPageState.url)
+      ) {
+        await page.goto(resolved.initialPageState.url, {
+          waitUntil: 'domcontentloaded',
+          timeout: resolved.defaultStepTimeoutMs,
+        });
+      }
 
       this.attachEvidenceListeners(page, resolved.evidence);
       this.attachBrowserPolicies(page, resolved, controller);
@@ -174,7 +193,14 @@ export class ScriptExecutor {
         }
         await context.close().catch(() => undefined);
       }
-      if (browser) {
+      if (browser && resolved.reuseBrowser) {
+        this.reusableBrowserTimer = setTimeout(() => {
+          this.reusableBrowser?.close().catch(() => undefined);
+          this.reusableBrowser = null;
+          this.reusableBrowserTimer = null;
+        }, 60_000);
+        this.reusableBrowserTimer.unref?.();
+      } else if (browser) {
         await browser.close().catch(() => undefined);
       }
       if (resolved.evidence.artifactDirectory) {
@@ -439,12 +465,9 @@ export class ScriptExecutor {
         return;
       }
       case 'submit': {
-        await this.getActionLocator(page, action, selector).evaluate((element) => {
-          const form = element instanceof HTMLFormElement ? element : element.closest('form');
-          if (!form) {
-            throw new Error('Submit target is not a form and has no parent form');
-          }
-          form.requestSubmit();
+        await this.getActionLocator(page, action, selector).press('Enter', {
+          timeout: options.defaultStepTimeoutMs,
+          noWaitAfter: true,
         });
         return;
       }
@@ -471,10 +494,7 @@ export class ScriptExecutor {
         if (!Number.isFinite(x) || !Number.isFinite(y)) {
           throw new Error('Scroll action value must use the "y,x" numeric format');
         }
-        await page.evaluate(({ left, top }) => window.scrollTo({ left, top }), {
-          left: x,
-          top: y,
-        });
+        await page.evaluate(`window.scrollTo(${JSON.stringify({ left: x, top: y })})`);
         return;
       }
       case 'keyboard':
@@ -499,10 +519,15 @@ export class ScriptExecutor {
       case 'scrape': {
         const fields = Array.isArray((action.metadata as Record<string, unknown> | undefined)?.fields)
           ? (action.metadata as { fields: string[] }).fields : [];
-        const records = await page.locator(selector).evaluateAll((elements, names) =>
-          elements.map((element) => Object.fromEntries((names as string[]).map((name) => [
-            name, element.querySelector(`[data-field="${name}"]`)?.textContent?.trim() ?? '',
-          ]))), fields);
+        const records = await page.evaluate(`(() => {
+          const names = ${JSON.stringify(fields)};
+          return Array.from(document.querySelectorAll(${JSON.stringify(selector)})).map((element) =>
+            Object.fromEntries(names.map((name) => [
+              name,
+              element.querySelector('[data-field="' + CSS.escape(name) + '"]')?.textContent?.trim() ?? ''
+            ]))
+          );
+        })()`) as Array<Record<string, string>>;
         this.consoleLogs.push(`[scrape] ${redactText(JSON.stringify(records))}`);
         return;
       }
@@ -861,7 +886,36 @@ export class ScriptExecutor {
       popupPolicy: options?.popupPolicy ?? 'deny',
       retryPolicy: options?.retryPolicy ?? DEFAULT_RETRY_POLICY,
       evidence: options?.evidence ?? DEFAULT_EVIDENCE_POLICY,
+      reuseBrowser: options?.reuseBrowser ?? false,
+      initialPageState: options?.initialPageState ?? {},
     };
+  }
+
+  private async applyInitialPageState(
+    context: BrowserContext,
+    state: ExecutionOptions['initialPageState']
+  ): Promise<void> {
+    if (!state?.url || !/^https?:\/\//i.test(state.url)) return;
+    const origin = new URL(state.url).origin;
+    const cookies = String(state.cookies ?? '').split(';').map((entry) => entry.trim()).filter(Boolean)
+      .map((entry) => {
+        const separator = entry.indexOf('=');
+        return separator > 0
+          ? { name: entry.slice(0, separator).trim(), value: entry.slice(separator + 1), url: origin }
+          : null;
+      }).filter((cookie): cookie is { name: string; value: string; url: string } => Boolean(cookie));
+    if (cookies.length) await context.addCookies(cookies);
+
+    const local = state.localStorage ?? {};
+    const session = state.sessionStorage ?? {};
+    if (Object.keys(local).length || Object.keys(session).length) {
+      const content = `(() => {
+        if (location.origin !== ${JSON.stringify(origin)}) return;
+        for (const [key, value] of Object.entries(${JSON.stringify(local)})) localStorage.setItem(key, value);
+        for (const [key, value] of Object.entries(${JSON.stringify(session)})) sessionStorage.setItem(key, value);
+      })();`;
+      await context.addInitScript({ content });
+    }
   }
 
   private resolveUrl(urlValue: string | undefined, baseUrl: string | undefined): string {

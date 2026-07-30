@@ -7,10 +7,10 @@ describe('Phase 1 UI modernization', () => {
 
   test('exposes every primary function in a labeled tool rail', () => {
     expect(html).toContain('id="tool-rail"');
-    for (const label of ['Browse', 'Inspect', 'Record', 'Replay', 'Scrape', 'Reports', 'Settings']) {
+    for (const label of ['Browse', 'Inspect', 'Record', 'Suites', 'Replay', 'Scrape', 'Reports', 'Settings']) {
       expect(html).toContain(`<span>${label}</span>`);
     }
-    expect(html.match(/class="rail-action/g)).toHaveLength(7);
+    expect(html.match(/class="rail-action/g)).toHaveLength(8);
     expect(html.match(/aria-label="/g)?.length).toBeGreaterThanOrEqual(9);
   });
 
@@ -21,6 +21,24 @@ describe('Phase 1 UI modernization', () => {
     for (const id of ['home-health-score', 'home-recent-recordings', 'home-recent-runs', 'rail-recording-badge', 'rail-action-count', 'rail-failure-count', 'rail-healing-count']) {
       expect(html).toContain(`id="${id}"`);
     }
+  });
+
+  test('makes the end-to-end automation workflow visible and navigable', () => {
+    for (const destination of ['record', 'suites', 'run', 'reports']) {
+      expect(html).toContain(`data-workflow-destination="${destination}"`);
+    }
+    expect(renderer).toContain('function showSuitesWorkspace()');
+    expect(renderer).toContain("label: 'Open Suites'");
+  });
+
+  test('opens on Workspace Home instead of the browser surface', () => {
+    expect(html).toContain('<section class="home-workspace" id="home-workspace"');
+    expect(html).toContain('<div class="browser-view hidden" id="browser-view">');
+    expect(renderer).toContain("title: 'Workspace'");
+    expect(renderer).toContain("uiState: { workspace: 'home', activeTool: null");
+
+    const startup = renderer.slice(renderer.indexOf("document.addEventListener('DOMContentLoaded'"));
+    expect(startup).toContain('showHomeWorkspace();');
   });
 
   test('captures and restores tool panel state per tab', () => {
@@ -36,6 +54,8 @@ describe('Phase 1 UI modernization', () => {
     expect(renderer).toContain('home-load-recording');
     expect(renderer).toContain('home-replay-recording');
     expect(renderer).toContain('home-rename-recording');
+    expect(renderer).toContain('class="home-delete-recording danger-icon-btn"');
+    expect(renderer).toContain('M19 6v14a2 2 0 0 1-2 2H7');
     expect(renderer).toContain("ipcRenderer.invoke('rename-recording'");
     expect(html).toContain('id="recording-name-dialog"');
   });

@@ -30,6 +30,11 @@
     return `<div class="report-metric ${tone}"><span>${label}</span><strong>${value}</strong></div>`;
   }
 
+  function signed(value, suffix = '') {
+    const number = Number(value) || 0;
+    return `${number > 0 ? '+' : ''}${number}${suffix}`;
+  }
+
   function screenshotSource(step) {
     const value = step?.evidence?.screenshotBase64 ?? step?.screenshot;
     if (!value) return '';
@@ -124,7 +129,13 @@
               <span>${duration(report.durationMs)}</span>
             </div>
           </div>
-          <div class="report-score">${report.passRate}%<small>pass rate</small></div>
+          <div class="report-hero-actions">
+            <div class="report-score">${report.passRate}%<small>pass rate</small></div>
+            <button class="report-rerun-btn" data-rerun-report title="Replay this recording and compare the results">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+              Rerun and compare
+            </button>
+          </div>
         </header>
 
         <section class="report-metrics">
@@ -135,6 +146,15 @@
           ${metric('Skipped', report.skipped, 'skipped')}
           ${metric('Duration', duration(report.durationMs), 'duration')}
         </section>
+
+        ${report.comparison ? `<section class="rerun-comparison" aria-label="Rerun comparison">
+          <div><span>Compared with previous run</span><strong>${escape(report.comparison.previousRunId)}</strong></div>
+          <div><span>Status</span><strong class="${report.comparison.statusChanged ? 'changed' : ''}">${escape(report.comparison.previousStatus)} → ${escape(report.comparison.currentStatus)}</strong></div>
+          <div><span>Pass rate</span><strong>${signed(report.comparison.passRateDelta, '%')}</strong></div>
+          <div><span>Failures</span><strong>${signed(report.comparison.failedDelta)}</strong></div>
+          <div><span>Healed</span><strong>${signed(report.comparison.healedDelta)}</strong></div>
+          <div><span>Duration</span><strong>${signed(report.comparison.durationDeltaMs, ' ms')}</strong></div>
+        </section>` : ''}
 
         ${report.runError ? `<section class="report-callout failed"><strong>Run-level error</strong><span>${escape(report.runError)}</span></section>` : ''}
 
@@ -191,6 +211,9 @@
         query: button.dataset.helpQuery || '',
       } }));
     }));
+    container.querySelector?.('[data-rerun-report]')?.addEventListener('click', () => {
+      window.dispatchEvent(new CustomEvent('chromation-rerun-report', { detail: { report } }));
+    });
   }
 
   window.ChromationReportWorkspace = { render };

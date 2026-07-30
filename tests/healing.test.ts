@@ -22,16 +22,37 @@ function pageWithCandidates(candidates: unknown[], selectorCount = 1): Page {
 
 describe('HealingEngine', () => {
   test('captures a locator fingerprint from the live element', async () => {
-    const evaluate = jest.fn().mockResolvedValue(original);
+    const attributes = original.attributes;
+    const locator = {
+      getAttribute: jest.fn((name: string) => Promise.resolve(
+        name === 'role' ? original.role : attributes[name] ?? (name === 'aria-label' ? original.accessibleName : null)
+      )),
+      textContent: jest.fn().mockResolvedValue(original.text),
+      boundingBox: jest.fn().mockResolvedValue(original.boundingBox),
+      elementHandle: jest.fn().mockResolvedValue({
+        getProperty: jest.fn().mockResolvedValue({
+          jsonValue: jest.fn().mockResolvedValue('BUTTON'),
+          dispose: jest.fn().mockResolvedValue(undefined),
+        }),
+        dispose: jest.fn().mockResolvedValue(undefined),
+      }),
+    };
     const page = {
       locator: jest.fn().mockReturnValue({
-        first: jest.fn().mockReturnValue({ evaluate }),
+        first: jest.fn().mockReturnValue(locator),
       }),
     } as unknown as Page;
 
     const fingerprint = await new HealingEngine().captureFingerprint(page, '#save');
 
-    expect(fingerprint).toEqual(original);
+    expect(fingerprint).toEqual(expect.objectContaining({
+      tagName: 'button',
+      attributes: expect.objectContaining(original.attributes),
+      text: original.text,
+      accessibleName: original.accessibleName,
+      role: original.role,
+      boundingBox: original.boundingBox,
+    }));
     expect(page.locator).toHaveBeenCalledWith('#save');
   });
 

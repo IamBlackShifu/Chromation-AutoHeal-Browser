@@ -186,6 +186,7 @@
         <button class="rail-action active" data-workspace="browse" title="Browse (Ctrl+Shift+B)" aria-label="Browse"><span class="rail-icon">⌂</span><span>Browse</span></button>
         <button class="rail-action" data-tool="inspector" title="Inspect (Ctrl+Shift+I)" aria-label="Inspect"><span class="rail-icon">⌖</span><span>Inspect</span></button>
         <button class="rail-action" data-tool="recorder" title="Record (Ctrl+Shift+R)" aria-label="Record"><span class="rail-icon">●</span><span>Record</span><span class="rail-badge recording-dot hidden" id="rail-recording-badge"></span><span class="rail-badge" id="rail-action-count">0</span></button>
+        <button class="rail-action" data-action="suites" title="Suites" aria-label="Suites"><span class="rail-icon">▦</span><span>Suites</span></button>
         <button class="rail-action" data-action="replay" title="Replay recording (Ctrl+Enter)" aria-label="Replay"><span class="rail-icon">▷</span><span>Replay</span></button>
         <button class="rail-action" data-tool="scraper" title="Scrape (Ctrl+Shift+S)" aria-label="Scrape"><span class="rail-icon">▦</span><span>Scrape</span></button>
         <button class="rail-action" data-action="reports" title="Reports (Ctrl+Shift+P)" aria-label="Reports"><span class="rail-icon">▤</span><span>Reports</span><span class="rail-badge danger" id="rail-failure-count">0</span><span class="rail-badge success" id="rail-healing-count">0</span></button>
@@ -194,11 +195,17 @@
 
       <!-- Main Content Area -->
       <div class="main-content">
-        <section class="home-workspace hidden" id="home-workspace" aria-label="Chromation workspace">
+        <section class="home-workspace" id="home-workspace" aria-label="Chromation workspace">
           <header class="home-hero">
             <div><p class="eyebrow">AUTOMATION WORKSPACE</p><h1>Good testing starts here.</h1><p>Record a flow, replay a suite, or inspect recent execution health.</p></div>
             <button class="primary-action" id="home-start-recording">● Start recording</button>
           </header>
+          <nav class="workflow-path" aria-label="Automation workflow">
+            <button data-workflow-destination="record"><span>1</span><strong>Record</strong><small>Capture a reusable test</small></button>
+            <button data-workflow-destination="suites"><span>2</span><strong>Organize</strong><small>Group tests into suites</small></button>
+            <button data-workflow-destination="run"><span>3</span><strong>Run</strong><small>Replay or execute a matrix</small></button>
+            <button data-workflow-destination="reports"><span>4</span><strong>Analyze</strong><small>Compare results and fix failures</small></button>
+          </nav>
           <div class="health-grid">
             <article><span>Project health</span><strong id="home-health-score">—</strong><small>Pass rate</small></article>
             <article><span>Recent runs</span><strong id="home-run-count">0</strong><small>Execution history</small></article>
@@ -217,7 +224,7 @@
           </div>
         </section>
       <!-- Browser View (webview) -->
-      <div class="browser-view" id="browser-view">
+      <div class="browser-view hidden" id="browser-view">
         <webview 
           id="browser-webview" 
           src="about:blank"
@@ -434,7 +441,8 @@
         <div class="form-group" style="margin-top: 12px;">
           <label class="form-label">Replay Engine</label>
           <select id="replay-engine-select" class="form-select">
-            <option value="webview" selected>In-Browser Replay (fast)</option>
+            <option value="auto" selected>Auto (recommended)</option>
+            <option value="webview">In-Browser Replay (fast)</option>
             <option value="playwright">Playwright Executor (evidence-rich)</option>
           </select>
           <div class="engine-guidance" id="replay-engine-guidance" role="note"></div>
@@ -531,19 +539,21 @@
         </div>
       </details>
 
-      <details class="panel-card p1-authoring-card">
-        <summary class="card-header"><h5>Suites & Matrix Runs</h5><span class="badge">P2</span></summary>
+      <details class="panel-card p1-authoring-card" id="suite-builder-section">
+        <summary class="card-header"><h5>Suites & Matrix Runs</h5><span class="badge">Organize</span></summary>
         <div class="card-content">
-          <div class="form-row"><input id="suite-name" class="form-input" placeholder="Suite name">
-            <input id="suite-tags" class="form-input" placeholder="Suite tags"></div>
+          <div class="suite-helper"><strong>Build once, run many ways</strong><p>A suite is a named group of recorded tests. Create one, add the current recording, then choose browsers and concurrency.</p><button type="button" id="suite-help-btn">How suites work</button></div>
+          <label class="workflow-field"><span>1. Create or choose a suite</span><div class="form-row"><input id="suite-name" class="form-input" placeholder="e.g. Checkout smoke">
+            <input id="suite-tags" class="form-input" placeholder="smoke, checkout"></div></label>
           <button id="create-suite-btn" class="secondary-btn full-width">Create suite</button>
-          <select id="suite-select" class="form-select"><option value="">Select a suite</option></select>
-          <div class="form-row"><input id="suite-test-name" class="form-input" placeholder="Test name">
-            <input id="suite-test-tags" class="form-input" placeholder="smoke, checkout"></div>
-          <button id="add-suite-test-btn" class="secondary-btn full-width">Add current recording</button>
-          <div class="form-row"><input id="matrix-browsers" class="form-input" value="chrome" placeholder="chrome, msedge">
-            <input id="matrix-concurrency" class="form-input" type="number" min="1" max="32" value="2"></div>
-          <button id="run-suite-matrix-btn" class="primary-btn full-width">Run selected suite matrix</button>
+          <select id="suite-select" class="form-select" aria-label="Selected suite"><option value="">Select a suite</option></select>
+          <div id="suite-selection-summary" class="suite-selection-summary">Choose a suite to see its tests.</div>
+          <label class="workflow-field"><span>2. Add the current recording</span><div class="form-row"><input id="suite-test-name" class="form-input" placeholder="e.g. Card payment">
+            <input id="suite-test-tags" class="form-input" placeholder="smoke, critical"></div></label>
+          <button id="add-suite-test-btn" class="secondary-btn full-width">Add current recording to suite</button>
+          <label class="workflow-field"><span>3. Choose the run matrix</span><div class="form-row"><input id="matrix-browsers" class="form-input" value="chrome" placeholder="chrome, msedge" title="Comma-separated browser names">
+            <input id="matrix-concurrency" class="form-input" type="number" min="1" max="32" value="2" title="Maximum parallel jobs"></div></label>
+          <button id="run-suite-matrix-btn" class="primary-btn full-width">Run selected suite</button>
           <pre id="matrix-run-summary" class="project-summary">No matrix run yet.</pre>
         </div>
       </details>

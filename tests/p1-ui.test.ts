@@ -31,6 +31,10 @@ describe('P1 recorder UI integrations', () => {
     expect(html).toContain('add-suite-test-btn');
     expect(html).toContain('run-suite-matrix-btn');
     expect(renderer).toContain('initializeSuiteControls');
+    expect(html).toContain('suite-builder-section');
+    expect(html).toContain('suite-selection-summary');
+    expect(html).toContain('How suites work');
+    expect(renderer).toContain("showHelp('suite')");
     expect(preload).toContain('executeSuiteMatrix');
   });
 

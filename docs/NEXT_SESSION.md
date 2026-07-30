@@ -7,7 +7,7 @@ Last updated: 29 July 2026
 - The P0/P1/P2 implementation pass and all three UI modernization phases are in place.
 - Browsing history, report workspace, user guidance, diagnostics, searchable help,
   and contextual remediation actions are implemented.
-- The final local quality gate passes with 20 Jest suites and 106 tests, followed
+- The final local quality gate passes with 20 Jest suites and 110 tests, followed
   by ESLint, the TypeScript build, and the renderer Webpack build.
 - Generated CLI output under `chromation-results/` is intentionally ignored.
 

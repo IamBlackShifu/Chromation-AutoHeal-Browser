@@ -301,7 +301,7 @@ Include/exclude specific element types or sections.
 ## 📚 Learn More
 
 - **OhScrapper Repository**: https://github.com/IamBlackShifu/OhScrapper
-- **Chromation Docs**: See `docs/` folder
+- **Chromation Docs**: See this folder
 - **Quick Reference**: `QUICK_REFERENCE.md`
 
 ---

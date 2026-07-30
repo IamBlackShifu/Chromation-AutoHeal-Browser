@@ -89,6 +89,13 @@ export interface ExecutionOptions {
   popupPolicy?: ResourcePolicy;
   retryPolicy?: RetryPolicy;
   evidence?: EvidencePolicy;
+  reuseBrowser?: boolean;
+  initialPageState?: {
+    url?: string;
+    cookies?: string;
+    localStorage?: Record<string, string>;
+    sessionStorage?: Record<string, string>;
+  };
 }
 
 export interface NetworkEntry {

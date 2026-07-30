@@ -110,7 +110,7 @@ describe('ScriptExecutor reliability', () => {
       uncheck: jest.fn().mockResolvedValue(undefined),
       setInputFiles: jest.fn().mockResolvedValue(undefined),
       focus: jest.fn().mockResolvedValue(undefined),
-      evaluate: jest.fn().mockResolvedValue(undefined),
+      press: jest.fn().mockResolvedValue(undefined),
     };
     const page = {
       locator: jest.fn().mockReturnValue({ first: () => locator }),
@@ -158,13 +158,14 @@ describe('ScriptExecutor reliability', () => {
       expect.objectContaining({ timeout: 5000 })
     );
     expect(locator.focus).toHaveBeenCalled();
-    expect(locator.evaluate).toHaveBeenCalled();
+    expect(locator.press).toHaveBeenCalledWith('Enter', expect.objectContaining({ timeout: 5000, noWaitAfter: true }));
+    expect(page.evaluate).toHaveBeenCalledWith(expect.any(String));
     expect(page.dragAndDrop).toHaveBeenCalledWith(
       '#source',
       '#target',
       expect.objectContaining({ timeout: 5000 })
     );
-    expect(page.evaluate).toHaveBeenCalledWith(expect.any(Function), { left: 20, top: 500 });
+    expect(page.evaluate).toHaveBeenCalledWith('window.scrollTo({"left":20,"top":500})');
   });
 
   test('cancels an active execution and closes browser resources', async () => {
@@ -528,5 +529,49 @@ describe('ScriptExecutor reliability', () => {
     expect(plugins.emit).toHaveBeenCalledWith('run:start', expect.anything());
     expect(plugins.emit).toHaveBeenCalledWith('step:complete', expect.anything());
     expect(plugins.emit).toHaveBeenCalledWith('run:complete', expect.anything());
+  });
+
+  test('reuses the interactive browser while isolating contexts and mirroring page state', async () => {
+    const page = {
+      on: jest.fn(), goto: jest.fn().mockResolvedValue(undefined),
+    } as unknown as Page;
+    const context = {
+      newPage: jest.fn().mockResolvedValue(page),
+      addCookies: jest.fn().mockResolvedValue(undefined),
+      addInitScript: jest.fn().mockResolvedValue(undefined),
+      close: jest.fn().mockResolvedValue(undefined),
+    } as unknown as BrowserContext;
+    const browser = {
+      isConnected: jest.fn().mockReturnValue(true),
+      newContext: jest.fn().mockResolvedValue(context),
+      close: jest.fn().mockResolvedValue(undefined),
+    } as unknown as Browser;
+    const browserType = { launch: jest.fn().mockResolvedValue(browser) } as unknown as BrowserType;
+    const executor = new ScriptExecutor(browserType);
+    const options = {
+      reuseBrowser: true,
+      initialPageState: {
+        url: 'https://example.test/account',
+        cookies: 'session=abc',
+        localStorage: { theme: 'dark' },
+        sessionStorage: { flow: 'checkout' },
+      },
+    };
+
+    await executor.execute([], options);
+    await executor.execute([], options);
+
+    expect(browserType.launch).toHaveBeenCalledTimes(1);
+    expect(browser.newContext).toHaveBeenCalledTimes(2);
+    expect(context.addCookies).toHaveBeenCalledWith([
+      { name: 'session', value: 'abc', url: 'https://example.test' },
+    ]);
+    expect(context.addInitScript).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining('localStorage.setItem'),
+    }));
+    expect(page.goto).toHaveBeenCalledWith(
+      'https://example.test/account',
+      expect.objectContaining({ waitUntil: 'domcontentloaded' })
+    );
   });
 });

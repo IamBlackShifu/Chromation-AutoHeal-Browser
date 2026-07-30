@@ -63,10 +63,36 @@ describe('instant replay report workspace', () => {
     expect(container.innerHTML).toContain('Console entries');
     expect(container.innerHTML).toContain('data-report-format="html"');
     expect(container.innerHTML).toContain('data-export-all-reports');
+    expect(container.innerHTML).toContain('data-rerun-report');
+    expect(container.innerHTML).toContain('Rerun and compare');
     expect(container.innerHTML).toContain('src="data:image/png;base64,ZmFrZQ=="');
     expect(container.innerHTML).toContain('<details open>');
     expect(container.innerHTML).toContain('#name&lt;script&gt;');
     expect(container.innerHTML).not.toContain('#name<script>');
+  });
+
+  test('shows actionable differences after a rerun', () => {
+    const source = fs.readFileSync(path.join(process.cwd(), 'ui', 'report-workspace.js'), 'utf8');
+    const browserWindow: Record<string, unknown> = {};
+    vm.runInNewContext(source, { window: browserWindow });
+    const workspace = browserWindow.ChromationReportWorkspace as {
+      render(container: { innerHTML: string; querySelectorAll(): never[] }, report: unknown): void;
+    };
+    const container = { innerHTML: '', querySelectorAll: () => [] as never[] };
+    workspace.render(container, {
+      runId: 'run-2', status: 'passed', startedAt: 2, durationMs: 800,
+      total: 2, passed: 2, failed: 0, skipped: 0, healed: 0, passRate: 100,
+      consoleLogs: [], networkSummary: [], steps: [],
+      comparison: {
+        previousRunId: 'run-1', statusChanged: true, previousStatus: 'failed',
+        currentStatus: 'passed', passRateDelta: 50, failedDelta: -1,
+        healedDelta: -1, durationDeltaMs: -950,
+      },
+    });
+    expect(container.innerHTML).toContain('Compared with previous run');
+    expect(container.innerHTML).toContain('failed → passed');
+    expect(container.innerHTML).toContain('+50%');
+    expect(container.innerHTML).toContain('-950 ms');
   });
 
   test('accepts data URL and legacy screenshot representations and surfaces capture errors', () => {
