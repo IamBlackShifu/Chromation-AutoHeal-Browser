@@ -19,9 +19,11 @@
 
 ## Status and planning
 
+- [Current Project Status](PROJECT_STATUS.md)
 - [Beta Release Notes](BETA_RELEASE_NOTES.md)
 - [Roadmap](ROADMAP.md)
 - [Robustness and UX Audit](ROBUSTNESS_UX_AUDIT_CHECKLIST.md)
+- [Mobile Application Automation Plan](MOBILE_AUTOMATION_PLAN.md)
 - [Next Session Handoff](NEXT_SESSION.md)
 
 Historical design material is retained under [`archive/`](archive/).

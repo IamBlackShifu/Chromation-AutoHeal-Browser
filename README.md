@@ -17,6 +17,10 @@ Chromation AutoHeal Browser is a Chromium-engine-based automation browser purpos
 > evidence-based reliability and product audit is in
 > [docs/ROBUSTNESS_UX_AUDIT_CHECKLIST.md](docs/ROBUSTNESS_UX_AUDIT_CHECKLIST.md).
 
+For the latest implementation audit and pending work, see
+[docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md). The proposed Android/iOS path is
+documented in [docs/MOBILE_AUTOMATION_PLAN.md](docs/MOBILE_AUTOMATION_PLAN.md).
+
 ## Features
 
 ### 🔍 Smart Element Inspection

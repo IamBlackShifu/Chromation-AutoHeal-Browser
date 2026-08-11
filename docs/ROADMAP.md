@@ -1,6 +1,10 @@
 # Chromation Pending Work Checklist
 
-Last reviewed: 29 July 2026
+Last reviewed: 11 August 2026
+
+For the audited implementation snapshot, see [PROJECT_STATUS.md](PROJECT_STATUS.md).
+The staged Android/iOS extension is defined in
+[MOBILE_AUTOMATION_PLAN.md](MOBILE_AUTOMATION_PLAN.md).
 
 This is the working roadmap for turning Chromation into a comprehensive and
 reliable automation-testing tool. Check an item only after its acceptance
@@ -131,6 +135,20 @@ criteria and relevant automated tests pass.
 - [x] Natural-language test generation with explicit review
 - [x] Remote workers and CI result synchronization
 - [x] Plugin/integration SDK
+
+## Mobile application automation
+
+- [ ] Extract platform-neutral action, locator, session, and driver contracts
+- [ ] Preserve web behavior behind a `WebAutomationDriver` adapter
+- [ ] Add Appium session management and setup diagnostics
+- [ ] Deliver Android native/hybrid inspection, recording, replay, evidence, and export
+- [ ] Add context-aware mobile locator healing with conservative approval policies
+- [ ] Add deterministic Android emulator and real-device contract/E2E coverage
+- [ ] Add iOS simulator and real-device support through a macOS worker
+- [ ] Add provider-neutral local/cloud device matrices and capability mapping
+
+Acceptance criteria, sequencing, risks, and the recommended first slice are in
+[MOBILE_AUTOMATION_PLAN.md](MOBILE_AUTOMATION_PLAN.md).
 
 ## UI and UX modernization roadmap
 
