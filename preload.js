@@ -35,6 +35,11 @@ const invokeChannels = new Set([
   'get-environment-variable',
   'list-environment-variables',
   'set-origin-permission',
+  'mobile-connect',
+  'mobile-status',
+  'mobile-inspect',
+  'mobile-action',
+  'mobile-disconnect',
 ]);
 const sendChannels = new Set(['window-minimize', 'window-maximize', 'window-close']);
 const receiveChannels = new Set([

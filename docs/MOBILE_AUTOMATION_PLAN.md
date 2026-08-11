@@ -2,6 +2,18 @@
 
 Last reviewed: 11 August 2026
 
+Current implementation and resume notes: [MOBILE_AUTOMATION_HANDOFF.md](MOBILE_AUTOMATION_HANDOFF.md).
+
+## Implementation status
+
+The foundational contracts, Android Appium connection, screenshot/hierarchy
+inspection, ranked native locators, context-aware fingerprints, conservative
+healing, Electron IPC bridge, live actions, hybrid context switching, recorder-step
+capture, and expanded portrait inspector are implemented on
+`feature/mobile-automation`. Replay routing, Appium TypeScript export, richer
+gestures/lifecycle/evidence, setup diagnostics, profiles, and device E2E coverage
+remain pending. See the handoff for exact validation and the recommended next slice.
+
 ## Goal and approach
 
 Extend Chromation so its authoring, healing, execution, suites, and reporting
@@ -221,4 +233,3 @@ Start with one Android emulator, one bundled sample APK, and one login journey.
 Implement contracts, session creation, screenshot/source, accessibility-ID lookup,
 tap/input/assert, evidence, and TypeScript export. This validates the design before
 recorder mirroring, gestures, healing, iOS signing, or cloud providers.
-

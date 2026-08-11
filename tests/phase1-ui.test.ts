@@ -7,10 +7,10 @@ describe('Phase 1 UI modernization', () => {
 
   test('exposes every primary function in a labeled tool rail', () => {
     expect(html).toContain('id="tool-rail"');
-    for (const label of ['Browse', 'Inspect', 'Record', 'Suites', 'Replay', 'Scrape', 'Reports', 'Settings']) {
+    for (const label of ['Browse', 'Inspect', 'Record', 'Suites', 'Replay', 'Scrape', 'Mobile', 'Reports', 'Settings']) {
       expect(html).toContain(`<span>${label}</span>`);
     }
-    expect(html.match(/class="rail-action/g)).toHaveLength(8);
+    expect(html.match(/class="rail-action/g)).toHaveLength(9);
     expect(html.match(/aria-label="/g)?.length).toBeGreaterThanOrEqual(9);
   });
 
@@ -29,6 +29,11 @@ describe('Phase 1 UI modernization', () => {
     }
     expect(renderer).toContain('function showSuitesWorkspace()');
     expect(renderer).toContain("label: 'Open Suites'");
+  });
+
+  test('does not repeat workflow navigation in a second quick-start block', () => {
+    expect(html).not.toContain('<h2>Quick start</h2>');
+    expect(html).not.toContain('data-quick-action=');
   });
 
   test('opens on Workspace Home instead of the browser surface', () => {

@@ -1009,6 +1009,19 @@ export class ScriptExecutor {
     return { ...this.stateSnapshot };
   }
 
+  async close(): Promise<void> {
+    this.cancel('Executor closed');
+    if (this.reusableBrowserTimer) {
+      clearTimeout(this.reusableBrowserTimer);
+      this.reusableBrowserTimer = null;
+    }
+    const activeContext = this.activeRun?.context;
+    const reusableBrowser = this.reusableBrowser;
+    this.reusableBrowser = null;
+    await activeContext?.close().catch(() => undefined);
+    await reusableBrowser?.close().catch(() => undefined);
+  }
+
   private positiveTimeout(value: number | undefined, fallback: number, name: string): number {
     const resolved = value ?? fallback;
     if (!Number.isFinite(resolved) || resolved <= 0) {

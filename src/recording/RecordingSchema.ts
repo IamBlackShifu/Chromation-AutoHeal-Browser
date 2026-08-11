@@ -1,6 +1,7 @@
 import type { ActionType, AssertionMetadata, RecordedAction } from '../recorder/Recorder';
+import { AutomationTarget, DEFAULT_WEB_TARGET } from '../automation/types';
 
-export const RECORDING_SCHEMA_VERSION = 1;
+export const RECORDING_SCHEMA_VERSION = 2;
 export const MAX_RECORDING_ACTIONS = 10_000;
 
 const ACTION_TYPES = new Set<ActionType>([
@@ -9,6 +10,8 @@ const ACTION_TYPES = new Set<ActionType>([
   'checkbox', 'radio', 'focus', 'dragstart', 'drop', 'submit', 'waitForPageLoad', 'scrape',
   'visual', 'api', 'mockNetwork', 'accessibility', 'performance',
   'plugin',
+  'tap', 'longPress', 'swipe', 'back', 'rotate', 'clear', 'launchApp',
+  'terminateApp', 'switchContext', 'hideKeyboard',
 ]);
 const ASSERTION_KINDS = new Set<AssertionMetadata['kind']>([
   'text-contains', 'visible', 'value-equals', 'attribute-equals', 'count-equals',
@@ -24,6 +27,7 @@ export interface RecordingDocument {
   createdAt: number;
   updatedAt: number;
   actionCount: number;
+  target: AutomationTarget;
 }
 
 export class RecordingValidationError extends Error {
@@ -143,6 +147,15 @@ export function validateRecordedAction(value: unknown, path = 'action'): Recorde
       if (!isStringRecord(fingerprint.attributes)) {
         issues.push(`${path}.locatorFingerprint.attributes must contain string values`);
       }
+      if (fingerprint.mobileContext !== undefined && !isValidMobileContext(fingerprint.mobileContext)) {
+        issues.push(`${path}.locatorFingerprint.mobileContext is invalid`);
+      }
+      if (fingerprint.nodePath !== undefined && (
+        !Array.isArray(fingerprint.nodePath) ||
+        !fingerprint.nodePath.every((part) => Number.isInteger(part) && Number(part) >= 0)
+      )) {
+        issues.push(`${path}.locatorFingerprint.nodePath must contain non-negative integers`);
+      }
     }
   }
 
@@ -165,7 +178,8 @@ export function validateRecordedActions(values: unknown): RecordedAction[] {
 export function createRecordingDocument(
   name: string,
   actions: unknown,
-  timestamp = Date.now()
+  timestamp = Date.now(),
+  target: AutomationTarget = DEFAULT_WEB_TARGET
 ): RecordingDocument {
   const normalizedName = validateName(name);
   const validatedActions = validateRecordedActions(actions);
@@ -176,6 +190,7 @@ export function createRecordingDocument(
     createdAt: timestamp,
     updatedAt: timestamp,
     actionCount: validatedActions.length,
+    target: validateAutomationTarget(target),
   };
 }
 
@@ -191,7 +206,7 @@ export function parseRecordingDocument(value: unknown): RecordingDocument {
       typeof value.timestamp === 'number' ? value.timestamp : Date.now()
     );
   }
-  if (value.schemaVersion !== RECORDING_SCHEMA_VERSION) {
+  if (value.schemaVersion !== 1 && value.schemaVersion !== RECORDING_SCHEMA_VERSION) {
     throw new RecordingValidationError([
       `schemaVersion ${String(value.schemaVersion)} is not supported; expected ${RECORDING_SCHEMA_VERSION}`,
     ]);
@@ -210,7 +225,36 @@ export function parseRecordingDocument(value: unknown): RecordingDocument {
     createdAt,
     updatedAt,
     actionCount: actions.length,
+    target: value.schemaVersion === 1 || value.target === undefined
+      ? { ...DEFAULT_WEB_TARGET }
+      : validateAutomationTarget(value.target),
   };
+}
+
+function validateAutomationTarget(value: unknown): AutomationTarget {
+  if (!isRecord(value)) {
+    throw new RecordingValidationError(['target must be an object']);
+  }
+  const platforms = new Set(['web', 'android', 'ios']);
+  const modes = new Set(['web', 'native', 'hybrid', 'mobileWeb']);
+  if (typeof value.platform !== 'string' || !platforms.has(value.platform)) {
+    throw new RecordingValidationError(['target.platform is unsupported']);
+  }
+  if (typeof value.mode !== 'string' || !modes.has(value.mode)) {
+    throw new RecordingValidationError(['target.mode is unsupported']);
+  }
+  if (value.platform === 'web' && !['web', 'mobileWeb'].includes(value.mode)) {
+    throw new RecordingValidationError(['web targets must use web or mobileWeb mode']);
+  }
+  if (value.platform !== 'web' && value.mode === 'web') {
+    throw new RecordingValidationError(['mobile targets cannot use web mode']);
+  }
+  for (const field of ['name', 'appId', 'deviceProfile'] as const) {
+    if (value[field] !== undefined && (typeof value[field] !== 'string' || value[field].length > 500)) {
+      throw new RecordingValidationError([`target.${field} must be a string no longer than 500 characters`]);
+    }
+  }
+  return value as unknown as AutomationTarget;
 }
 
 function validateName(value: unknown): string {
@@ -229,4 +273,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isStringRecord(value: unknown): value is Record<string, string> {
   return isRecord(value) && Object.values(value).every((entry) => typeof entry === 'string');
+}
+
+function isValidMobileContext(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return (value.platform === 'android' || value.platform === 'ios') &&
+    ['native', 'hybrid', 'mobileWeb'].includes(String(value.mode)) &&
+    ['appId', 'automationName', 'contextName'].every((name) =>
+      typeof value[name] === 'string' && String(value[name]).length > 0);
 }

@@ -159,6 +159,22 @@ export class ChromationBrowser {
 }
 
 export { ScriptExecutor } from './executor/ScriptExecutor';
+export { WebAutomationDriver } from './drivers/web/WebAutomationDriver';
+export { AppiumClient, AppiumProtocolError } from './drivers/appium/AppiumClient';
+export { AndroidAutomationDriver } from './drivers/appium/AndroidAutomationDriver';
+export type { AndroidDriverConfig } from './drivers/appium/AndroidAutomationDriver';
+export { MobileHierarchyParser, MobileInspector } from './mobile/inspector/MobileHierarchy';
+export type { MobileHierarchy, MobileHierarchyNode } from './mobile/inspector/MobileHierarchy';
+export { MobileHealingEngine } from './mobile/healing/MobileHealingEngine';
+export type {
+  MobileAutomationContext, MobileHealingOptions, MobileLocatorFingerprint,
+} from './mobile/healing/MobileHealingEngine';
+export { DEFAULT_WEB_TARGET } from './automation/types';
+export type {
+  ApplicationMode, AutomationDriver, AutomationPlatform, AutomationSessionInfo,
+  AutomationTarget, CapabilityDescriptor, DriverCapabilities, InspectedElement,
+  LocatorCandidate,
+} from './automation/types';
 export { TestProject } from './project/TestProject';
 export { RunHistoryStore } from './reporter/RunHistoryStore';
 export { ShortcutManager } from './ui/ShortcutManager';

@@ -36,7 +36,17 @@ export type ActionType =
   | 'mockNetwork'
   | 'accessibility'
   | 'performance'
-  | 'plugin';
+  | 'plugin'
+  | 'tap'
+  | 'longPress'
+  | 'swipe'
+  | 'back'
+  | 'rotate'
+  | 'clear'
+  | 'launchApp'
+  | 'terminateApp'
+  | 'switchContext'
+  | 'hideKeyboard';
 
 export interface AssertionMetadata {
   kind:

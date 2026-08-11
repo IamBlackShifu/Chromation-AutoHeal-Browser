@@ -189,6 +189,7 @@
         <button class="rail-action" data-action="suites" title="Suites" aria-label="Suites"><span class="rail-icon">▦</span><span>Suites</span></button>
         <button class="rail-action" data-action="replay" title="Replay recording (Ctrl+Enter)" aria-label="Replay"><span class="rail-icon">▷</span><span>Replay</span></button>
         <button class="rail-action" data-tool="scraper" title="Scrape (Ctrl+Shift+S)" aria-label="Scrape"><span class="rail-icon">▦</span><span>Scrape</span></button>
+        <button class="rail-action" data-tool="mobile" title="Mobile automation" aria-label="Mobile"><span class="rail-icon">▯</span><span>Mobile</span><span class="rail-badge warning" id="rail-mobile-status">OFF</span></button>
         <button class="rail-action" data-action="reports" title="Reports (Ctrl+Shift+P)" aria-label="Reports"><span class="rail-icon">▤</span><span>Reports</span><span class="rail-badge danger" id="rail-failure-count">0</span><span class="rail-badge success" id="rail-healing-count">0</span></button>
         <button class="rail-action" data-action="settings" title="Settings (Ctrl+,)" aria-label="Settings"><span class="rail-icon">⚙</span><span>Settings</span></button>
       </aside>
@@ -213,13 +214,7 @@
             <article><span>Auto-healed</span><strong id="home-healed-count">0</strong><small>Recovered locators</small></article>
           </div>
           <div class="home-grid">
-            <section class="home-card"><div class="card-heading"><h2>Quick start</h2><span>Common workflows</span></div><div class="quick-actions">
-              <button data-quick-action="record">Record a test<small>Capture browser actions</small></button>
-              <button data-quick-action="inspect">Inspect a page<small>Find resilient locators</small></button>
-              <button data-quick-action="recordings">Open recordings<small>Replay saved flows</small></button>
-              <button data-quick-action="reports">Review reports<small>Investigate failures</small></button>
-            </div></section>
-            <section class="home-card"><div class="card-heading"><h2>Recent recordings</h2><button id="home-all-recordings">View all</button></div><div class="recent-list" id="home-recent-recordings"><p class="empty-state">No recordings yet.</p></div></section>
+            <section class="home-card wide"><div class="card-heading"><h2>Recent recordings</h2><button id="home-all-recordings">View all</button></div><div class="recent-list" id="home-recent-recordings"><p class="empty-state">No recordings yet.</p></div></section>
             <section class="home-card wide"><div class="card-heading"><h2>Recent runs</h2><button id="home-all-runs">View reports</button></div><div class="recent-list" id="home-recent-runs"><p class="empty-state">No runs yet.</p></div></section>
           </div>
         </section>
@@ -716,6 +711,52 @@
           <button id="export-excel-btn" class="secondary-btn full-width">Export Excel</button>
           <button id="cancel-scrape-btn" class="secondary-btn full-width">Cancel</button>
         <button id="export-json-btn" class="secondary-btn">Export as JSON</button>
+      </div>
+    </div>
+  </template>
+
+  <template id="mobile-panel-template">
+    <div class="tool-panel mobile-panel">
+      <div class="panel-section mobile-panel-hero">
+        <div><p class="eyebrow">DEVICE AUTOMATION</p><h4 class="panel-heading">Mobile workspace <span class="beta-chip">ALPHA</span></h4>
+          <p class="panel-description">Configure an Appium target, inspect its hierarchy, and build resilient native locators.</p></div>
+        <span id="mobile-connection-state" class="mobile-state disconnected"><i></i>Disconnected</span>
+      </div>
+
+      <div class="panel-card">
+        <div class="card-header"><h5>Target configuration</h5><span class="badge">Appium</span></div>
+        <div class="card-content mobile-config-grid">
+          <label class="form-group"><span class="form-label">Platform</span><select id="mobile-platform" class="form-select"><option value="android">Android</option><option value="ios">iOS</option></select></label>
+          <label class="form-group"><span class="form-label">Application mode</span><select id="mobile-mode" class="form-select"><option value="native">Native</option><option value="hybrid">Hybrid</option><option value="mobileWeb">Mobile web</option></select></label>
+          <label class="form-group mobile-config-wide"><span class="form-label">Appium server</span><input id="mobile-server-url" class="form-input" value="http://127.0.0.1:4723" spellcheck="false"></label>
+          <label class="form-group"><span class="form-label">Device</span><input id="mobile-device-name" class="form-input" placeholder="Pixel_8_API_35"></label>
+          <label class="form-group"><span class="form-label">Device serial / UDID</span><input id="mobile-device-udid" class="form-input" placeholder="emulator-5554"></label>
+          <label class="form-group"><span class="form-label">App package / bundle ID</span><input id="mobile-app-id" class="form-input" placeholder="org.example.app"></label>
+        </div>
+        <div class="mobile-action-row"><button id="mobile-run-doctor" class="secondary-btn">Check session</button><button id="mobile-connect" class="primary-btn">Connect device</button></div>
+        <p id="mobile-config-message" class="panel-description" aria-live="polite">Enter a device name to begin.</p>
+      </div>
+
+      <div class="mobile-session-strip" aria-label="Mobile session status">
+        <div><span>Context</span><select id="mobile-context" class="mobile-context-select" disabled><option>NATIVE_APP</option></select></div>
+        <div><span>Screen</span><strong id="mobile-screen">—</strong></div>
+        <div><span>Orientation</span><strong id="mobile-orientation">PORTRAIT</strong></div>
+      </div>
+
+      <div class="mobile-device-controls" aria-label="Live device controls">
+        <button id="mobile-live-back" class="secondary-btn" disabled>Back</button>
+        <button id="mobile-live-keyboard" class="secondary-btn" disabled>Hide keyboard</button>
+        <button id="mobile-live-rotate" class="secondary-btn" disabled>Rotate</button>
+      </div>
+
+      <div class="panel-card mobile-inspector-card">
+        <div class="card-header"><h5>Device inspector</h5><div class="mobile-inspector-actions"><button id="mobile-expand-preview" class="secondary-btn" aria-expanded="false">Expand view</button><button id="mobile-refresh-hierarchy" class="secondary-btn" disabled>Refresh hierarchy</button></div></div>
+        <div class="mobile-device-preview" id="mobile-device-preview">
+          <div class="mobile-device-frame"><div class="mobile-device-speaker"></div><div class="mobile-device-empty"><span class="mobile-preview-icon">▯</span><strong>No device connected</strong><small>The live screenshot will appear here.</small></div></div>
+        </div>
+        <div class="mobile-inspector-tabs" role="tablist"><button class="active" data-mobile-tab="hierarchy">Hierarchy</button><button data-mobile-tab="locators">Locators</button></div>
+        <div id="mobile-hierarchy-empty" class="mobile-hierarchy-empty"><span>Application hierarchy</span><small>Connect and refresh to inspect native elements.</small></div>
+        <div id="mobile-locator-preview" class="mobile-locator-preview hidden"><p class="panel-description">Select an element from the live hierarchy to view ranked locators.</p></div>
       </div>
     </div>
   </template>

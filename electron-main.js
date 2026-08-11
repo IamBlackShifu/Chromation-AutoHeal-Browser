@@ -9,12 +9,43 @@ const fs = require('fs');
 const {
   createRecordingDocument,
   parseRecordingDocument,
+  validateRecordedAction,
 } = require('./dist/recording/RecordingSchema');
+const { AndroidAutomationDriver } = require('./dist/drivers/appium/AndroidAutomationDriver');
 
 let mainWindow;
 let browserView;
 const MAX_RECORDING_FILE_BYTES = 10 * 1024 * 1024;
 const originPermissions = new Map();
+let mobileDriver = null;
+
+function assertTrustedRenderer(event) {
+  if (!mainWindow || event.sender !== mainWindow.webContents) {
+    throw new Error('Mobile request did not originate from this browser window');
+  }
+}
+
+function validateMobileConnectionRequest(request) {
+  if (!request || request.platform !== 'android') throw new Error('Only Android is available in this build');
+  const serverUrl = String(request.serverUrl || '').trim();
+  const parsed = new URL(serverUrl);
+  if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('Appium server must use HTTP or HTTPS');
+  if (!['127.0.0.1', 'localhost', '::1'].includes(parsed.hostname)) {
+    throw new Error('Remote Appium servers are disabled until explicit host permissions are implemented');
+  }
+  const deviceName = String(request.deviceName || '').trim();
+  if (!deviceName || deviceName.length > 200) throw new Error('Device name is required');
+  const appId = String(request.appId || '').trim();
+  if (appId.length > 500) throw new Error('App identifier is too long');
+  const udid = String(request.udid || '').trim();
+  if (udid.length > 200 || (udid && !/^[A-Za-z0-9._:-]+$/.test(udid))) throw new Error('Device serial is invalid');
+  const capabilities = {
+    'appium:deviceName': deviceName,
+    ...(udid ? { 'appium:udid': udid } : {}),
+    ...(appId ? { 'appium:appPackage': appId } : {}),
+  };
+  return { serverUrl: parsed.toString().replace(/\/$/, ''), capabilities };
+}
 
 function createWindow() {
   // Create the main application window
@@ -47,6 +78,8 @@ function createWindow() {
   }
 
   mainWindow.on('closed', () => {
+    mobileDriver?.close().catch(() => undefined);
+    mobileDriver = null;
     mainWindow = null;
   });
 
@@ -570,6 +603,70 @@ ipcMain.handle('get-app-diagnostics', async () => {
     safeStorageAvailable: safeStorage.isEncryptionAvailable(),
     timestamp: Date.now(),
   };
+});
+
+ipcMain.handle('mobile-connect', async (event, request) => {
+  try {
+    assertTrustedRenderer(event);
+    const config = validateMobileConnectionRequest(request);
+    await mobileDriver?.close().catch(() => undefined);
+    mobileDriver = new AndroidAutomationDriver(config);
+    const sessionInfo = await mobileDriver.connect();
+    return { success: true, sessionInfo };
+  } catch (error) {
+    await mobileDriver?.close().catch(() => undefined);
+    mobileDriver = null;
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('mobile-status', async (event) => {
+  try {
+    assertTrustedRenderer(event);
+    return { success: true, status: mobileDriver ? await mobileDriver.getLiveStatus() : { connected: false, sessionId: null } };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('mobile-inspect', async (event) => {
+  try {
+    assertTrustedRenderer(event);
+    if (!mobileDriver?.isConnected()) throw new Error('No mobile device session is connected');
+    const inspection = await mobileDriver.inspectHierarchy();
+    const status = await mobileDriver.getLiveStatus();
+    return { success: true, inspection, status };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('mobile-action', async (event, request) => {
+  try {
+    assertTrustedRenderer(event);
+    if (!mobileDriver?.isConnected()) throw new Error('No mobile device session is connected');
+    const action = validateRecordedAction(request?.action);
+    if (!['tap', 'click', 'input', 'clear', 'back', 'hideKeyboard', 'rotate', 'switchContext'].includes(action.type)) {
+      throw new Error(`Live mobile action ${action.type} is not allowed`);
+    }
+    await mobileDriver.executeLiveAction(action);
+    const inspection = await mobileDriver.inspectHierarchy();
+    const status = await mobileDriver.getLiveStatus();
+    return { success: true, inspection, status };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('mobile-disconnect', async (event) => {
+  try {
+    assertTrustedRenderer(event);
+    await mobileDriver?.disconnect();
+    mobileDriver = null;
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
 });
 
 // Rename a recording while keeping its actions and metadata intact.

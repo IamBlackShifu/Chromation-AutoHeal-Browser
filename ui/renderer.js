@@ -19,6 +19,7 @@ let activeStepFilter = 'all';
 let stepSearchQuery = '';
 let executionElapsedTimer = null;
 let runHistoryHydrated = false;
+let activeMobileSelection = null;
 
 function normalizeRecordedActions(actions) {
   if (!Array.isArray(actions)) return [];
@@ -264,6 +265,9 @@ function toggleTool(tool) {
     case 'scraper':
       showScraperPanel();
       break;
+    case 'mobile':
+      showMobilePanel();
+      break;
   }
   
   sidePanel.classList.add('open');
@@ -272,6 +276,7 @@ function toggleTool(tool) {
 }
 
 function closePanel() {
+  document.body.classList.remove('mobile-inspector-open');
   sidePanel.classList.remove('open');
   setActiveRailAction('browse');
   const tab = tabs?.find?.((item) => item.id === activeTabId);
@@ -805,6 +810,260 @@ async function refreshP1AuthoringSummary() {
       ? comparisons.map((item) => `${item.selector}: ${item.attempts} attempts · ${Math.round(item.averageConfidence * 100)}% average`).join('\n')
       : 'No healing history yet.';
   }
+}
+
+function showMobilePanel() {
+  panelTitle.textContent = 'Mobile Automation';
+  const template = document.getElementById('mobile-panel-template');
+  panelContent.innerHTML = template.innerHTML;
+
+  const platform = document.getElementById('mobile-platform');
+  const deviceName = document.getElementById('mobile-device-name');
+  const message = document.getElementById('mobile-config-message');
+  const connect = document.getElementById('mobile-connect');
+  const doctor = document.getElementById('mobile-run-doctor');
+  const refresh = document.getElementById('mobile-refresh-hierarchy');
+  const expandPreview = document.getElementById('mobile-expand-preview');
+  const contextSelect = document.getElementById('mobile-context');
+  const deviceControls = ['mobile-live-back', 'mobile-live-keyboard', 'mobile-live-rotate'];
+  let connected = false;
+
+  const setConnectionState = (isConnected, status = {}) => {
+    connected = isConnected;
+    const state = document.getElementById('mobile-connection-state');
+    state.className = `mobile-state ${isConnected ? 'ready' : 'disconnected'}`;
+    state.innerHTML = `<i></i>${isConnected ? 'Connected' : 'Disconnected'}`;
+    connect.textContent = isConnected ? 'Disconnect' : 'Connect device';
+    connect.classList.toggle('secondary-btn', isConnected);
+    connect.classList.toggle('primary-btn', !isConnected);
+    refresh.disabled = !isConnected;
+    document.getElementById('rail-mobile-status').textContent = isConnected ? 'ON' : 'OFF';
+    const contexts = status.contexts?.length ? status.contexts : [status.context || 'NATIVE_APP'];
+    contextSelect.innerHTML = contexts.map((context) => `<option value="${escapeReportText(context)}">${escapeReportText(context)}</option>`).join('');
+    contextSelect.value = status.context || contexts[0];
+    contextSelect.disabled = !isConnected || contexts.length < 2;
+    deviceControls.forEach((id) => { document.getElementById(id).disabled = !isConnected; });
+    document.getElementById('mobile-screen').textContent = status.screen || '—';
+    document.getElementById('mobile-orientation').textContent = status.orientation || 'PORTRAIT';
+  };
+
+  platform?.addEventListener('change', () => {
+    message.textContent = platform.value === 'ios'
+      ? 'iOS execution requires a configured macOS worker and XCUITest.'
+      : 'Android execution uses the UiAutomator2 Appium driver.';
+  });
+  doctor?.addEventListener('click', async () => {
+    const result = await ipcRenderer.invoke('mobile-status');
+    if (!result.success) return showToast(result.error, 'error');
+    setConnectionState(Boolean(result.status.connected), result.status);
+    message.textContent = result.status.connected
+      ? `Appium session ${result.status.sessionId} is healthy.`
+      : 'No active session. Verify Appium, UiAutomator2, adb, and the emulator before connecting.';
+  });
+  connect?.addEventListener('click', async () => {
+    if (connected) {
+      const result = await ipcRenderer.invoke('mobile-disconnect');
+      if (!result.success) return showToast(result.error, 'error');
+      setConnectionState(false);
+      renderDisconnectedMobilePreview();
+      message.textContent = 'Device disconnected.';
+      return;
+    }
+    if (!deviceName.value.trim()) {
+      message.textContent = 'Device name is required before connecting.';
+      deviceName.focus();
+      return;
+    }
+    connect.disabled = true;
+    connect.textContent = 'Connecting…';
+    message.textContent = `Opening Appium session for ${deviceName.value.trim()}…`;
+    const result = await ipcRenderer.invoke('mobile-connect', {
+      platform: platform.value,
+      mode: document.getElementById('mobile-mode').value,
+      serverUrl: document.getElementById('mobile-server-url').value,
+      deviceName: deviceName.value.trim(),
+      udid: document.getElementById('mobile-device-udid').value.trim(),
+      appId: document.getElementById('mobile-app-id').value.trim(),
+    });
+    connect.disabled = false;
+    if (!result.success) {
+      setConnectionState(false);
+      message.textContent = result.error;
+      return showToast(`Mobile connection failed: ${result.error}`, 'error');
+    }
+    setConnectionState(true, result.sessionInfo);
+    message.textContent = `Connected to Appium session ${result.sessionInfo.sessionId}.`;
+    showToast('Mobile device connected', 'success');
+    await refreshMobileInspection();
+  });
+  refresh?.addEventListener('click', refreshMobileInspection);
+  expandPreview?.addEventListener('click', toggleExpandedMobileInspector);
+  contextSelect?.addEventListener('change', () => runMobileDeviceAction('switchContext', contextSelect.value));
+  document.getElementById('mobile-live-back')?.addEventListener('click', () => runMobileDeviceAction('back'));
+  document.getElementById('mobile-live-keyboard')?.addEventListener('click', () => runMobileDeviceAction('hideKeyboard'));
+  document.getElementById('mobile-live-rotate')?.addEventListener('click', () => {
+    const current = document.getElementById('mobile-orientation').textContent;
+    runMobileDeviceAction('rotate', current === 'LANDSCAPE' ? 'PORTRAIT' : 'LANDSCAPE');
+  });
+  document.querySelectorAll('[data-mobile-tab]').forEach((button) => button.addEventListener('click', () => {
+    document.querySelectorAll('[data-mobile-tab]').forEach((tab) => tab.classList.toggle('active', tab === button));
+    document.getElementById('mobile-hierarchy-empty')?.classList.toggle('hidden', button.dataset.mobileTab !== 'hierarchy');
+    document.getElementById('mobile-locator-preview')?.classList.toggle('hidden', button.dataset.mobileTab !== 'locators');
+  }));
+  ipcRenderer.invoke('mobile-status').then((result) => {
+    if (result.success) setConnectionState(Boolean(result.status.connected), result.status);
+  }).catch(() => undefined);
+}
+
+function toggleExpandedMobileInspector() {
+  const card = document.querySelector('.mobile-inspector-card');
+  const button = document.getElementById('mobile-expand-preview');
+  if (!card || !button) return;
+  const expanded = card.classList.toggle('expanded');
+  document.body.classList.toggle('mobile-inspector-open', expanded);
+  button.textContent = expanded ? 'Restore view' : 'Expand view';
+  button.setAttribute('aria-expanded', String(expanded));
+}
+
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && document.querySelector('.mobile-inspector-card.expanded')) {
+    toggleExpandedMobileInspector();
+  }
+});
+
+async function refreshMobileInspection() {
+  const refresh = document.getElementById('mobile-refresh-hierarchy');
+  const message = document.getElementById('mobile-config-message');
+  refresh.disabled = true;
+  refresh.textContent = 'Refreshing…';
+  const result = await ipcRenderer.invoke('mobile-inspect');
+  refresh.textContent = 'Refresh hierarchy';
+  refresh.disabled = false;
+  if (!result.success) {
+    message.textContent = result.error;
+    return showToast(`Inspection failed: ${result.error}`, 'error');
+  }
+  renderMobileInspection(result.inspection);
+  const contextSelect = document.getElementById('mobile-context');
+  if (result.status.contexts?.length) {
+    contextSelect.innerHTML = result.status.contexts.map((context) => `<option value="${escapeReportText(context)}">${escapeReportText(context)}</option>`).join('');
+  }
+  contextSelect.value = result.status.context || 'NATIVE_APP';
+  contextSelect.disabled = (result.status.contexts?.length || 0) < 2;
+  document.getElementById('mobile-screen').textContent = result.status.screen || '—';
+  document.getElementById('mobile-orientation').textContent = result.status.orientation || 'PORTRAIT';
+  message.textContent = `${result.inspection.hierarchy.nodeCount} elements inspected.`;
+}
+
+function renderDisconnectedMobilePreview() {
+  const preview = document.getElementById('mobile-device-preview');
+  if (preview) preview.innerHTML = '<div class="mobile-device-frame"><div class="mobile-device-speaker"></div><div class="mobile-device-empty"><span class="mobile-preview-icon">▯</span><strong>No device connected</strong><small>The live screenshot will appear here.</small></div></div>';
+  const hierarchy = document.getElementById('mobile-hierarchy-empty');
+  if (hierarchy) hierarchy.innerHTML = '<span>Application hierarchy</span><small>Connect and refresh to inspect native elements.</small>';
+}
+
+function renderMobileInspection(inspection) {
+  const preview = document.getElementById('mobile-device-preview');
+  preview.innerHTML = `<div class="mobile-device-frame"><div class="mobile-device-speaker"></div><img class="mobile-device-screenshot" src="data:image/png;base64,${inspection.screenshotBase64}" alt="Connected mobile device screenshot"></div>`;
+  let elementIndex = 0;
+  const renderNode = (node, depth = 0) => {
+    const index = elementIndex++;
+    if (inspection.elements[index]) inspection.elements[index].nodePath = node.path;
+    const label = node.attributes['content-desc'] || node.attributes.text || node.attributes['resource-id'] || node.type;
+    return `<button class="mobile-hierarchy-node" data-mobile-element-index="${index}" style="--tree-depth:${depth}"><span>${escapeReportText(node.type.split('.').at(-1))}</span><small>${escapeReportText(label)}</small></button>${node.children.map((child) => renderNode(child, depth + 1)).join('')}`;
+  };
+  const hierarchy = document.getElementById('mobile-hierarchy-empty');
+  hierarchy.className = 'mobile-hierarchy-tree';
+  hierarchy.innerHTML = inspection.hierarchy.roots.map((node) => renderNode(node)).join('');
+  hierarchy.querySelectorAll('[data-mobile-element-index]').forEach((button) => button.addEventListener('click', () => {
+    hierarchy.querySelectorAll('.mobile-hierarchy-node').forEach((node) => node.classList.toggle('selected', node === button));
+    renderMobileLocators(inspection.elements[Number(button.dataset.mobileElementIndex)]);
+  }));
+}
+
+function renderMobileLocators(element) {
+  const target = document.getElementById('mobile-locator-preview');
+  activeMobileSelection = { element, locator: element.locators[0] || null };
+  target.innerHTML = element.locators.length ? `${element.locators.map((locator, index) => `
+    <button class="mobile-locator-option ${index === 0 ? 'selected' : ''}" data-mobile-locator-index="${index}"><span class="locator-rank ${locator.score >= .9 ? 'strong' : ''}">${Math.round(locator.score * 100)}</span><code>${escapeReportText(locator.strategy)}=${escapeReportText(locator.value)}</code><small>${escapeReportText((locator.reasons || []).join(' · '))}</small></button>
+  `).join('')}<div class="mobile-live-controls"><input id="mobile-live-input" class="form-input" placeholder="Text to type"><div><button id="mobile-live-tap" class="primary-btn">Tap</button><button id="mobile-live-type" class="secondary-btn">Type</button><button id="mobile-live-clear" class="secondary-btn">Clear</button><button id="mobile-add-step" class="secondary-btn">Add step</button></div></div>` : '<p class="panel-description">No locator candidates are available for this element.</p>';
+  target.querySelectorAll('[data-mobile-locator-index]').forEach((button) => button.addEventListener('click', () => {
+    target.querySelectorAll('.mobile-locator-option').forEach((item) => item.classList.toggle('selected', item === button));
+    activeMobileSelection.locator = element.locators[Number(button.dataset.mobileLocatorIndex)];
+  }));
+  document.getElementById('mobile-live-tap')?.addEventListener('click', () => runLiveMobileAction('tap'));
+  document.getElementById('mobile-live-type')?.addEventListener('click', () => runLiveMobileAction('input'));
+  document.getElementById('mobile-live-clear')?.addEventListener('click', () => runLiveMobileAction('clear'));
+  document.getElementById('mobile-add-step')?.addEventListener('click', addSelectedMobileStep);
+  document.querySelector('[data-mobile-tab="locators"]')?.click();
+}
+
+function buildSelectedMobileAction(type) {
+  if (!activeMobileSelection?.locator) return null;
+  const locator = activeMobileSelection.locator;
+  const element = activeMobileSelection.element;
+  const value = type === 'input' ? document.getElementById('mobile-live-input')?.value ?? '' : undefined;
+  return {
+    type,
+    selector: `${locator.strategy}=${locator.value}`,
+    value,
+    timestamp: Date.now(),
+    locatorFingerprint: {
+      tagName: element.elementType,
+      attributes: element.attributes || {},
+      text: element.text,
+      accessibleName: element.label,
+      role: element.attributes?.class || element.elementType,
+      boundingBox: element.bounds,
+      nodePath: element.nodePath || [],
+      locatorCandidates: element.locators.map(({ strategy, value, score }) => ({ strategy, value, score })),
+      mobileContext: {
+        platform: document.getElementById('mobile-platform').value,
+        mode: document.getElementById('mobile-mode').value,
+        appId: document.getElementById('mobile-app-id').value || 'current-app',
+        automationName: 'UiAutomator2',
+        contextName: document.getElementById('mobile-context').value || 'NATIVE_APP',
+        screen: document.getElementById('mobile-screen').textContent || undefined,
+        orientation: document.getElementById('mobile-orientation').textContent || undefined,
+      },
+    },
+  };
+}
+
+async function runLiveMobileAction(type) {
+  const action = buildSelectedMobileAction(type);
+  if (!action) return showToast('Select a mobile element and locator first', 'warning');
+  const result = await ipcRenderer.invoke('mobile-action', { action });
+  if (!result.success) return showToast(`Mobile action failed: ${result.error}`, 'error');
+  renderMobileInspection(result.inspection);
+  showToast(`${type} completed on device`, 'success');
+}
+
+async function runMobileDeviceAction(type, value) {
+  const result = await ipcRenderer.invoke('mobile-action', {
+    action: { type, selector: 'device', value, timestamp: Date.now() },
+  });
+  if (!result.success) return showToast(`Mobile action failed: ${result.error}`, 'error');
+  renderMobileInspection(result.inspection);
+  const contextSelect = document.getElementById('mobile-context');
+  if (result.status.contexts?.length) {
+    contextSelect.innerHTML = result.status.contexts.map((context) => `<option value="${escapeReportText(context)}">${escapeReportText(context)}</option>`).join('');
+  }
+  contextSelect.value = result.status.context || 'NATIVE_APP';
+  document.getElementById('mobile-screen').textContent = result.status.screen || '—';
+  document.getElementById('mobile-orientation').textContent = result.status.orientation || 'PORTRAIT';
+  showToast(`${type} completed on device`, 'success');
+}
+
+async function addSelectedMobileStep() {
+  const value = document.getElementById('mobile-live-input')?.value ?? '';
+  const action = buildSelectedMobileAction(value ? 'input' : 'tap');
+  if (!action) return showToast('Select a mobile element and locator first', 'warning');
+  const actions = await recorder.getActions();
+  await recorder.setActions([...actions, action]);
+  recordedActions = await recorder.getActions();
+  updatePhase1Badges();
+  showToast(`Added ${action.type} step to the recording`, 'success');
 }
 
 function setActiveRailAction(value) {
@@ -5081,13 +5340,6 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('home-start-recording')?.addEventListener('click', () => { showBrowseWorkspace(); toggleTool('recorder'); });
   document.getElementById('home-all-recordings')?.addEventListener('click', () => { showBrowseWorkspace(); showSavedRecordings(); });
   document.getElementById('home-all-runs')?.addEventListener('click', showRunHistoryPanel);
-  document.querySelectorAll('[data-quick-action]').forEach((button) => button.addEventListener('click', () => {
-    const action = button.dataset.quickAction;
-    if (action === 'record') { showBrowseWorkspace(); toggleTool('recorder'); }
-    if (action === 'inspect') { showBrowseWorkspace(); toggleTool('inspector'); }
-    if (action === 'recordings') { showBrowseWorkspace(); showSavedRecordings(); }
-    if (action === 'reports') showRunHistoryPanel();
-  }));
   document.querySelectorAll('[data-workflow-destination]').forEach((button) => button.addEventListener('click', () => {
     const destination = button.dataset.workflowDestination;
     if (destination === 'record') { showBrowseWorkspace(); toggleTool('recorder'); }

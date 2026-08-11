@@ -8,6 +8,18 @@ export interface LocatorFingerprint {
   role?: string;
   domPath?: string[];
   boundingBox?: { x: number; y: number; width: number; height: number };
+  mobileContext?: {
+    platform: 'android' | 'ios';
+    mode: 'native' | 'hybrid' | 'mobileWeb';
+    appId: string;
+    automationName: string;
+    contextName: string;
+    screen?: string;
+    window?: string;
+    orientation?: 'PORTRAIT' | 'LANDSCAPE';
+  };
+  nodePath?: number[];
+  locatorCandidates?: Array<{ strategy: string; value: string; score: number }>;
 }
 
 export interface HealingScoreBreakdown {

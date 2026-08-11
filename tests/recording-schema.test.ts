@@ -25,6 +25,43 @@ describe('RecordingSchema', () => {
     expect(recording.name).toBe('Smoke test');
     expect(recording.actionCount).toBe(1);
     expect(recording.createdAt).toBe(500);
+    expect(recording.target).toEqual({ platform: 'web', mode: 'web' });
+  });
+
+  test('migrates a version 1 recording to the default web target', () => {
+    const migrated = parseRecordingDocument({
+      schemaVersion: 1,
+      name: 'Version one',
+      actions: [action],
+      createdAt: 10,
+      updatedAt: 20,
+    });
+
+    expect(migrated.schemaVersion).toBe(2);
+    expect(migrated.target).toEqual({ platform: 'web', mode: 'web' });
+  });
+
+  test('preserves a valid mobile target', () => {
+    const recording = createRecordingDocument('Android login', [action], 500, {
+      platform: 'android',
+      mode: 'native',
+      appId: 'org.example.app',
+      deviceProfile: 'pixel-api-35',
+    });
+
+    expect(parseRecordingDocument(recording).target).toEqual({
+      platform: 'android',
+      mode: 'native',
+      appId: 'org.example.app',
+      deviceProfile: 'pixel-api-35',
+    });
+  });
+
+  test('rejects incompatible platform and application modes', () => {
+    expect(() => createRecordingDocument('Invalid', [], 500, {
+      platform: 'ios',
+      mode: 'web',
+    })).toThrow('mobile targets cannot use web mode');
   });
 
   test('migrates a legacy recording without a schema version', () => {
