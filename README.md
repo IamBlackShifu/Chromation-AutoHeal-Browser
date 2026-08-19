@@ -1,263 +1,190 @@
-# Chromation AutoHeal Browser
+# OmniFlow QA
 
-New to test organization? See [Suites and Automation Workflows](docs/SUITES_AND_WORKFLOWS.md)
-for the complete record → organize → run → report workflow, matrix execution,
-tagging guidance, CLI examples, and troubleshooting.
+OmniFlow QA is an Electron desktop QA workspace for web and Android automation.
+It brings browsing, inspection, recording, replay, locator healing, suites,
+reporting, and export into one developer-focused application.
 
-**Tagline:** *Browse. Inspect. Automate. Heal.*
+> Current status: `0.3.0-beta.1`. See the comprehensive
+> [Current Product and Engineering State](docs/CURRENT_STATE.md) for verified Web
+> Automation, Mobile Automation, UI/UX, limitations, and next work.
 
-## Overview
+## Current workflow
 
-Chromation AutoHeal Browser is a Chromium-engine-based automation browser purpose-built for QA Engineers, SDETs, and Automation Developers. It combines traditional browsing with deeply embedded automation tooling.
+`Browse or connect a device -> inspect -> record -> edit -> save -> replay -> heal -> report -> export`
 
-> Development status: this is a beta. Verified behavior and remaining
-> work are tracked in [docs/ROADMAP.md](docs/ROADMAP.md), with runtime
-> support defined in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md). Features
-> marked pending in the checklist are not production-ready. The latest
-> evidence-based reliability and product audit is in
-> [docs/ROBUSTNESS_UX_AUDIT_CHECKLIST.md](docs/ROBUSTNESS_UX_AUDIT_CHECKLIST.md).
+## Current automation architecture
 
-For the latest implementation audit and pending work, see
-[docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md). The proposed Android/iOS path is
-documented in [docs/MOBILE_AUTOMATION_PLAN.md](docs/MOBILE_AUTOMATION_PLAN.md).
+These diagrams describe the implementation as it works now. Green nodes are
+established paths, amber nodes need hardening, and red nodes are the first places
+to investigate when a recorded journey cannot be saved or replayed faithfully.
 
-## Features
+### Web automation
 
-### 🔍 Smart Element Inspection
-- Enhanced DevTools inspector with automation context
-- Hover to highlight elements with DOM path visualization
-- Shadow DOM and iFrame traversal support
-- Multi-strategy locator generation (id, class, CSS, XPath, ARIA, data-test, text, relative)
-- Stability and uniqueness scoring for each locator
+```mermaid
+flowchart TB
+    User["QA user"] --> Shell["Electron renderer<br/>Web Automation Studio"]
+    Shell --> WebView["Embedded Electron webview<br/>partition: persist:chromation"]
+    WebView --> Capture["DOM event capture + Inspector<br/>ranked selectors and fingerprints"]
+    Capture --> Recorder["Shared Recorder<br/>in-memory RecordedAction[]"]
 
-### 🎬 Script Recorder
-- Record browser interactions automatically
-- Capture clicks, inputs, navigation, assertions, and more
-- Multiple recording modes: manual, auto, and step-by-step
-- Export to multiple formats: Selenium (Java/Python/JS), Playwright, Cypress, Puppeteer, CDP
+    Recorder <--> Editor["Timeline / script editor<br/>edit · duplicate · reorder · disable · delete"]
+    Editor --> SaveUI["Save / import / reopen / rename / delete"]
+    SaveUI --> IPC["Preload allowlist + Electron IPC"]
+    IPC --> Schema["RecordingSchema v2<br/>validate · sanitize · target metadata"]
+    Schema --> Files[("userData/saved-recordings<br/>web_suite_*.json")]
+    Files --> Schema
+    Schema --> Recorder
 
-### 🔧 Auto-Healing Engine
-- AI + rules-based locator repair system
-- Automatic detection and repair of broken selectors
-- Multiple healing strategies: attribute similarity, DOM hierarchy, visual position, text proximity
-- Detailed healing event logging
+    Recorder --> Router{"Replay runtime /<br/>target routing"}
+    Router --> Embedded["Embedded-webview replay"]
+    Router --> WebDriver["WebAutomationDriver"]
+    WebDriver --> Playwright["Playwright / Chromium"]
+    Embedded --> Results["Normalized step results"]
+    Playwright --> Results
+    Results --> Healing["HealingEngine<br/>score fallback candidates"]
+    Healing -->|retry with candidate| Router
+    Healing -->|approved replacement| Recorder
+    Results --> Reports["Reporter + run history<br/>evidence and exports"]
 
-### 📊 Reporting Engine
-- Comprehensive execution reports with screenshots
-- Multiple export formats: HTML, PDF, JSON, JUnit XML
-- Performance metrics and network logs
-- Healing frequency analytics
+    FixWeb["FIX / VERIFY<br/>Packaged record → edit → save → restart →<br/>reopen → replay → heal → report E2E;<br/>prove webview / Playwright parity"]
+    Capture -.-> FixWeb
+    Router -.-> FixWeb
+    Files -.-> FixWeb
 
-### 🕷️ Scraper Studio
-- Visual data selection and table extraction
-- Pagination and infinite scroll handling
-- Export to CSV, JSON, Excel
-- Integrated from OhScrapper project
+    classDef stable fill:#123b2f,stroke:#5bd6a2,color:#fff;
+    classDef caution fill:#4a3814,stroke:#f0b84b,color:#fff;
+    classDef fix fill:#4b1f27,stroke:#ff6b7a,color:#fff;
+    class Shell,WebView,Recorder,Editor,IPC,Schema,Files,WebDriver,Playwright,Results,Healing,Reports stable;
+    class Capture,SaveUI,Router,Embedded caution;
+    class FixWeb fix;
+```
 
-### 🎨 Animation & UI
-- GPU-accelerated animations for smooth experience
-- Element highlighting and locator flash indicators
-- Low-performance mode for resource-constrained environments
+Web repair order: first add a packaged Electron fixture journey around the three
+amber boundaries (capture, persistence round-trip, and runtime routing). A saved
+recording is the validated JSON document, not the editor's live in-memory array;
+replay after restart must therefore load through `RecordingSchema` and restore
+the recording target before choosing webview or Playwright. Persisting an
+approved healed locator also changes the Recorder state, so it must be saved
+again if that repair is expected to survive restart.
 
-## Installation
+### Mobile automation (Android, current state)
 
-```bash
+```mermaid
+flowchart TB
+    User["QA user / physical device input"] --> Studio["Electron renderer<br/>Mobile Device Studio"]
+    Studio --> Setup["Device picker + Setup Doctor<br/>profiles and preflight"]
+    Setup --> IPC["Preload allowlist + Electron IPC"]
+    IPC --> Main["Electron main process<br/>session and process ownership"]
+    Main --> AppiumPM["AppiumProcessManager<br/>unique server / system / MJPEG ports"]
+    AppiumPM --> Appium["Appium 3 + UiAutomator2"]
+    Appium --> Device["Android device / emulator"]
+    Device --> Stream["scrcpy native mirror OR<br/>MJPEG / screenshot fallback"]
+    Device --> Hierarchy["Screenshot + XML hierarchy<br/>hit testing and locator ranking"]
+    Stream --> Studio
+    Hierarchy --> Studio
+
+    Device --> Physical["Experimental physical-input capture<br/>ADB getevent parser"]
+    Studio --> Preview["Embedded-preview pointer capture<br/>coordinate translation"]
+    Physical --> Translate["MobileInteractionRecorder<br/>tap · long press · swipe · key"]
+    Preview --> Translate
+    Hierarchy --> Translate
+    Translate --> Timeline["Shared editable RecordedAction[]<br/>launch step + mobile metadata"]
+    Timeline <--> Editor["Timeline editor<br/>edit · duplicate · reorder · disable · delete"]
+
+    Editor --> Save["Save recording dialog"]
+    Save --> IPC
+    IPC --> Schema["RecordingSchema v2<br/>Android target + validated actions"]
+    Schema --> Files[("userData/saved-recordings<br/>mobile_suite_*.json")]
+    Files --> Schema
+    Schema --> Timeline
+
+    Timeline --> Preflight["Mobile action / capability preflight"]
+    Preflight --> Driver["AndroidAutomationDriver"]
+    Driver --> Appium
+    Appium --> Evidence["Per-step screenshots · hierarchy ·<br/>context · logcat · normalized results"]
+    Evidence --> MobileHeal["MobileHealingEngine<br/>context-constrained candidates"]
+    MobileHeal -->|retry| Driver
+    MobileHeal -->|approved replacement| Timeline
+    Evidence --> Reports["Reporter + run history + Appium exports"]
+
+    CaptureFix["FIX FIRST: capture completeness<br/>touch boundaries · multi-touch slots · soft keyboard ·<br/>system UI · WebView changes · orientation · timing"]
+    SaveFix["FIX / VERIFY: mobile persistence<br/>stop/active-session save · edit round-trip · target/profile<br/>restoration · healed-locator re-save · corruption recovery"]
+    ReplayFix["FIX / VERIFY: real-device replay<br/>five-screen journeys · context waits · stream recovery ·<br/>session reuse/cleanup · multi-device matrix"]
+    Physical -.-> CaptureFix
+    Translate -.-> CaptureFix
+    Schema -.-> SaveFix
+    Files -.-> SaveFix
+    Preflight -.-> ReplayFix
+    Driver -.-> ReplayFix
+
+    classDef stable fill:#123b2f,stroke:#5bd6a2,color:#fff;
+    classDef caution fill:#4a3814,stroke:#f0b84b,color:#fff;
+    classDef fix fill:#4b1f27,stroke:#ff6b7a,color:#fff;
+    class Studio,Setup,IPC,Main,AppiumPM,Appium,Device,Stream,Hierarchy,Timeline,Editor,Schema,Files,Driver,Evidence,MobileHeal,Reports stable;
+    class Preview,Save,Preflight caution;
+    class Physical,Translate,CaptureFix,SaveFix,ReplayFix fix;
+```
+
+Mobile repair order is capture completeness first, persistence second, and
+replay certification third. Editing and JSON saving already share the web
+recording schema, but they cannot recover actions that physical capture never
+created. Use a repeatable five-screen native/hybrid fixture and compare device
+events, the live timeline, the reopened JSON recording, and replay results step
+for step. Do not treat a successful file write or Appium session as proof that
+mobile recording works end to end. iOS is not implemented.
+
+### Web
+
+- Embedded webview and Playwright replay paths.
+- Ranked inspection locators and conservative healing.
+- Editable recordings, assertions, waits, variables, environments, and flows.
+- Suites, browser matrices, concurrency, reports, and CI-oriented exports.
+- Playwright, Selenium, Cypress, Puppeteer, and CDP script export.
+
+### Android
+
+- Appium 3 and UiAutomator2 for native, hybrid, and mobile-web targets.
+- Connected-device picker for USB, emulator, and network targets.
+- Screenshot/hierarchy inspector, stable mobile locators, gestures, lifecycle,
+  contexts, permissions, alerts, files, key actions, and evidence.
+- Managed local Appium processes with collision-free per-device ports.
+- Native scrcpy mirror/control with MJPEG and screenshot fallbacks.
+- Appium TypeScript, Java, and Python export.
+
+iOS is not implemented.
+
+## UI/UX
+
+- Premium dark/light Electron shell with custom window controls.
+- Compact collapsible navigation, command palette, KPI dashboard, recording table,
+  responsive side drawers, status pills, focus states, and reduced-motion support.
+- Progressive disclosure keeps advanced mobile and matrix settings out of the
+  primary workflow.
+
+## Install and verify
+
+Requirements: Node.js 20 or 22 and npm 10.
+
+```powershell
 npm install
+npm.cmd run check
+npm.cmd start
 ```
 
-## Usage
+The current deterministic gate passes 35 Jest suites and 183 tests, ESLint,
+TypeScript, and Webpack. Android execution additionally requires ADB, Java,
+Appium, UiAutomator2, and an authorized device or emulator. The in-app Setup
+Doctor reports missing dependencies.
 
-### Basic Example
+## Documentation
 
-```typescript
-import ChromationBrowser from 'chromation-autoheal-browser';
-
-const browser = new ChromationBrowser();
-await browser.initialize();
-
-// Get modules
-const inspector = browser.getInspector();
-const recorder = browser.getRecorder();
-const healingEngine = browser.getHealingEngine();
-
-// Start recording
-recorder.startRecording('manual');
-
-// ... perform actions ...
-
-// Stop and export
-recorder.stopRecording();
-const script = await recorder.exportScript('playwright');
-
-await browser.shutdown();
-```
-
-### Inspector Usage
-
-```typescript
-const inspector = browser.getInspector();
-
-inspector.startInspection();
-const elementInfo = await inspector.inspectElement(element);
-const locators = await inspector.generateLocators(element);
-
-// Locators are ranked by stability and uniqueness
-console.log(locators[0]); // Best locator
-```
-
-### Recorder Usage
-
-```typescript
-const recorder = browser.getRecorder();
-
-recorder.startRecording('auto');
-// Actions are automatically recorded
-
-recorder.stopRecording();
-const actions = recorder.getActions();
-
-// Export to different formats
-const seleniumScript = await recorder.exportScript('selenium-python');
-const playwrightScript = await recorder.exportScript('playwright');
-```
-
-### Healing Engine Usage
-
-```typescript
-const healingEngine = browser.getHealingEngine();
-
-// Healing is enabled by default
-if (await healingEngine.detectBrokenLocator(selector)) {
-  const result = await healingEngine.healLocator(selector, page);
-  console.log(`Healed: ${result.originalSelector} -> ${result.healedSelector}`);
-  console.log(`Confidence: ${result.confidence}`);
-}
-
-// View healing history
-const history = healingEngine.getHealingHistory();
-```
-
-### Scraper Studio Usage
-
-```typescript
-const scraper = browser.getScraperStudio();
-
-scraper.startScraping();
-
-const data = await scraper.scrapeTable({
-  selector: 'table.data',
-  fields: ['name', 'email', 'phone'],
-  pagination: true,
-  maxPages: 10
-});
-
-const json = await scraper.exportData('json');
-const csv = await scraper.exportData('csv');
-```
-
-### Reporter Usage
-
-```typescript
-const reporter = browser.getReporter();
-
-reporter.startReport('Login Test');
-
-reporter.addStep({
-  name: 'Navigate to login page',
-  status: 'passed',
-  duration: 1500
-});
-
-reporter.addStep({
-  name: 'Enter credentials',
-  status: 'passed',
-  duration: 500
-});
-
-const report = reporter.endReport();
-const html = await reporter.exportReport(report, 'html');
-const junit = await reporter.exportReport(report, 'junit');
-```
-
-## Development
-
-### Build
-
-```bash
-npm run build
-```
-
-### Test
-
-```bash
-npm test
-```
-
-### Lint
-
-```bash
-npm run lint
-```
-
-### Watch Mode
-
-```bash
-npm run dev
-```
-
-## Architecture
-
-### Core Modules
-
-- **BrowserCore**: Chromium engine management and CDP connections
-- **Inspector**: Smart element inspection and locator generation
-- **Recorder**: Action recording and script generation
-- **HealingEngine**: Locator auto-healing system
-- **ScraperStudio**: Data extraction and scraping
-- **Reporter**: Test execution reporting
-- **UIManager**: Animation and UI components
-
-### Technology Stack
-
-- **Base**: Chromium (latest stable fork)
-- **Language**: TypeScript/Node.js
-- **Build**: Webpack
-- **Testing**: Jest
-- **Automation APIs**: Puppeteer, Playwright integration
-
-## Roadmap
-
-For the prioritized, testable implementation backlog and UI modernization
-phases, see [docs/ROADMAP.md](docs/ROADMAP.md).
-
-### MVP (Current)
-- ✅ Core architecture and module stubs
-- ✅ TypeScript project setup
-- ✅ Basic testing infrastructure
-- 🔄 Chromium fork integration
-- 🔄 CDP protocol implementation
-- 🔄 DevTools panel development
-
-### Future Enhancements
-- AI-powered test generation from natural language
-- Self-maintaining test suites
-- Visual regression detection
-- Test impact analysis
-- Parallel replay execution
-- Database connectors for scraped data
-
-## Contributing
-
-Contributions are welcome! Please read our contributing guidelines before submitting PRs.
+- [Documentation index](docs/README.md)
+- [Current state](docs/CURRENT_STATE.md)
+- [Mission delivery program](docs/MISSION_DELIVERY.md)
+- [Suites and workflows](docs/SUITES_AND_WORKFLOWS.md)
+- [Android compatibility](docs/ANDROID_COMPATIBILITY_MATRIX.md)
+- [Plugin SDK](docs/PLUGIN_SDK.md)
 
 ## License
 
-MIT License - see LICENSE file for details
-
-## Support
-
-For issues, questions, or feature requests, please open an issue on GitHub.
-
----
-
-**Chromation AutoHeal Browser** - The world's most automation-native browser where testing, inspection, scraping, and healing live inside the browsing experience itself.
+MIT

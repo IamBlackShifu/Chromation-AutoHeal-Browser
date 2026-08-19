@@ -1,5 +1,5 @@
 /**
- * Chromation AutoHeal Browser - Main Entry Point
+ * OmniFlow QA - Main Entry Point
  * 
  * Purpose-built automation browser for QA Engineers, SDETs, and Automation Developers
  * Tagline: Browse. Inspect. Automate. Heal.
@@ -18,6 +18,7 @@ import { SuiteFilter, SuiteManager } from './suite/SuiteManager';
 import { MatrixRunner, MatrixRunResult, MatrixValue } from './executor/MatrixRunner';
 import { AdvancedPageTesting, VisualRegressionService } from './advanced/AdvancedTesting';
 import { ReviewedTestGenerator } from './advanced/TestGeneration';
+import { APP_NAME } from './config/app';
 import { RunScheduler } from './advanced/Scheduling';
 import { PluginManager } from './plugins/PluginSDK';
 import type { ExecutionOptions, ExecutionResult, ExecutionStateSnapshot } from './executor/types';
@@ -58,13 +59,13 @@ export class ChromationBrowser {
   }
 
   async initialize(): Promise<void> {
-    console.log('Initializing Chromation AutoHeal Browser...');
+    console.log(`Initializing ${APP_NAME}...`);
     await this.browserCore.launch();
     console.log('Browser initialized successfully');
   }
 
   async shutdown(): Promise<void> {
-    console.log('Shutting down Chromation AutoHeal Browser...');
+    console.log(`Shutting down ${APP_NAME}...`);
     await this.browserCore.close();
     console.log('Browser shutdown complete');
   }
@@ -161,10 +162,27 @@ export class ChromationBrowser {
 export { ScriptExecutor } from './executor/ScriptExecutor';
 export { WebAutomationDriver } from './drivers/web/WebAutomationDriver';
 export { AppiumClient, AppiumProtocolError } from './drivers/appium/AppiumClient';
+export { AppiumProcessManager } from './drivers/appium/AppiumProcessManager';
+export { PortAllocator, PortLease, PortBundleLease } from './drivers/appium/PortAllocator';
+export { AndroidDeviceCommands } from './drivers/appium/AndroidDeviceCommands';
+export { FallbackDeviceStream, ScreenshotPollingStream, MjpegDeviceStream } from './mobile/streaming/DeviceStream';
+export { HierarchyRefreshPolicy } from './mobile/streaming/HierarchyRefreshPolicy';
+export { ScrcpyProcessManager } from './mobile/streaming/ScrcpyProcessManager';
+export { AndroidDeviceDiscovery, parseAdbDevices } from './mobile/diagnostics/AndroidDeviceDiscovery';
+export type { ConnectedAndroidDevice, AndroidDeviceState } from './mobile/diagnostics/AndroidDeviceDiscovery';
+export type { ScrcpyMirrorInfo, ScrcpyState, StartScrcpyOptions } from './mobile/streaming/ScrcpyProcessManager';
+export { generateAppiumJava, generateAppiumPython } from './drivers/appium/AppiumExporters';
+export type { ManagedAppiumInstance, ManagedAppiumStatus, StartAppiumOptions } from './drivers/appium/AppiumProcessManager';
+export type { AndroidPortBundle } from './drivers/appium/PortAllocator';
+export type { DeviceStream, DeviceFrame, DeviceStreamStatus, DeviceStreamTransport } from './mobile/streaming/DeviceStream';
 export { AndroidAutomationDriver } from './drivers/appium/AndroidAutomationDriver';
 export type { AndroidDriverConfig } from './drivers/appium/AndroidAutomationDriver';
 export { MobileHierarchyParser, MobileInspector } from './mobile/inspector/MobileHierarchy';
 export type { MobileHierarchy, MobileHierarchyNode } from './mobile/inspector/MobileHierarchy';
+export { mapScreenshotPointer, resolveElementAtPoint, stableLocators } from './mobile/inspector/ScreenshotAuthoring';
+export type { AuthoringElement, MobileOrientation, Point, Rect, ScreenshotPoint, Size } from './mobile/inspector/ScreenshotAuthoring';
+export { ANDROID_ACTION_MATRIX, preflightAndroidActions, validateMobileProfile } from './mobile/diagnostics/MobileReadiness';
+export type { DoctorCheck, MobileProfile } from './mobile/diagnostics/MobileReadiness';
 export { MobileHealingEngine } from './mobile/healing/MobileHealingEngine';
 export type {
   MobileAutomationContext, MobileHealingOptions, MobileLocatorFingerprint,
@@ -197,6 +215,7 @@ export type {
   ExecutionState,
   ExecutionStateSnapshot,
 } from './executor/types';
+export * from './mobile/recording/MobileInteractionRecorder';
 
 // Export main entry point
 export default ChromationBrowser;
@@ -204,7 +223,7 @@ export default ChromationBrowser;
 // Main execution block - runs when file is executed directly
 async function main() {
   console.log('='.repeat(60));
-  console.log('Chromation AutoHeal Browser');
+  console.log('OmniFlow QA');
   console.log('Browse. Inspect. Automate. Heal.');
   console.log('='.repeat(60));
   console.log();
@@ -213,7 +232,7 @@ async function main() {
   await browser.initialize();
   
   console.log();
-  console.log('✓ Chromation AutoHeal Browser is ready!');
+  console.log('✓ OmniFlow QA is ready!');
   console.log();
   console.log('Available modules:');
   console.log('  • Inspector - Element inspection and locator generation');

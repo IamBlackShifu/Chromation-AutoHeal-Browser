@@ -1,23 +1,47 @@
 /**
- * Chromation AutoHeal Browser - Electron Main Process
+ * OmniFlow QA - Electron Main Process
  * This creates the browser window and handles the main application lifecycle
  */
 
 const { app, BrowserWindow, ipcMain, Menu, dialog, webContents, session, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const packageMetadata = require('./package.json');
+const { execFileSync, spawn } = require('child_process');
+const APP_ID = packageMetadata.build?.appId || 'com.infinitylinesofcode.omniflowqa';
+const APP_ICON_PATH = path.join(__dirname, 'assets', 'omniflow-qa-icon.png');
+
+app.setName(packageMetadata.productName || 'OmniFlow QA');
+if (process.platform === 'win32') {
+  app.setAppUserModelId(APP_ID);
+}
+
+if (process.env.CHROMATION_E2E_USER_DATA) {
+  app.setPath('userData', path.resolve(process.env.CHROMATION_E2E_USER_DATA));
+}
 const {
   createRecordingDocument,
   parseRecordingDocument,
   validateRecordedAction,
 } = require('./dist/recording/RecordingSchema');
 const { AndroidAutomationDriver } = require('./dist/drivers/appium/AndroidAutomationDriver');
+const { AppiumProcessManager } = require('./dist/drivers/appium/AppiumProcessManager');
+const { ScrcpyProcessManager } = require('./dist/mobile/streaming/ScrcpyProcessManager');
+const { ANDROID_ACTION_MATRIX, preflightAndroidActions, validateMobileProfile } = require('./dist/mobile/diagnostics/MobileReadiness');
+const { AndroidDeviceDiscovery } = require('./dist/mobile/diagnostics/AndroidDeviceDiscovery');
+const { AndroidInputEventParser } = require('./dist/mobile/recording/AndroidInputEventParser');
 
 let mainWindow;
 let browserView;
 const MAX_RECORDING_FILE_BYTES = 10 * 1024 * 1024;
 const originPermissions = new Map();
 let mobileDriver = null;
+let mobileReplayDriver = null;
+let mobileTouchCapture = null;
+let mobileTouchCaptureStatus = { state: 'idle', bytes: 0, chunks: 0, touches: 0, keys: 0, error: null };
+const appiumProcessManager = new AppiumProcessManager();
+const scrcpyProcessManager = new ScrcpyProcessManager();
+const androidDeviceDiscovery = new AndroidDeviceDiscovery();
 
 function assertTrustedRenderer(event) {
   if (!mainWindow || event.sender !== mainWindow.webContents) {
@@ -37,12 +61,25 @@ function validateMobileConnectionRequest(request) {
   if (!deviceName || deviceName.length > 200) throw new Error('Device name is required');
   const appId = String(request.appId || '').trim();
   if (appId.length > 500) throw new Error('App identifier is too long');
+  const appActivity = String(request.appActivity || '').trim();
+  if (appActivity.length > 500) throw new Error('Application activity is too long');
   const udid = String(request.udid || '').trim();
   if (udid.length > 200 || (udid && !/^[A-Za-z0-9._:-]+$/.test(udid))) throw new Error('Device serial is invalid');
+  const advanced = request.capabilities && typeof request.capabilities === 'object' && !Array.isArray(request.capabilities)
+    ? request.capabilities : {};
+  const invalidCapability = Object.entries(advanced).find(([name, value]) =>
+    (!name.startsWith('appium:') && name !== 'platformName') ||
+    !['string', 'number', 'boolean'].includes(typeof value));
+  if (invalidCapability) throw new Error(`Advanced capability is invalid: ${invalidCapability[0]}`);
   const capabilities = {
     'appium:deviceName': deviceName,
+    'appium:noReset': false,
+    'appium:fullReset': false,
+    'appium:autoGrantPermissions': true,
     ...(udid ? { 'appium:udid': udid } : {}),
     ...(appId ? { 'appium:appPackage': appId } : {}),
+    ...(appActivity ? { 'appium:appActivity': appActivity } : {}),
+    ...advanced,
   };
   return { serverUrl: parsed.toString().replace(/\/$/, ''), capabilities };
 }
@@ -55,8 +92,8 @@ function createWindow() {
     minWidth: 1000,
     minHeight: 600,
     frame: false,
-    title: 'Chromation AutoHeal Browser',
-    icon: path.join(__dirname, 'assets', 'icon.png'),
+    title: `OmniFlow QA v${packageMetadata.version}`,
+    icon: APP_ICON_PATH,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       nodeIntegration: false,
@@ -83,7 +120,15 @@ function createWindow() {
     mainWindow = null;
   });
 
-  console.log('Chromation AutoHeal Browser window created');
+  mainWindow.on('maximize', () => {
+    mainWindow?.webContents.send('window-maximized', true);
+  });
+
+  mainWindow.on('unmaximize', () => {
+    mainWindow?.webContents.send('window-maximized', false);
+  });
+
+  console.log('OmniFlow QA window created');
 }
 
 function createMenu() {
@@ -159,7 +204,7 @@ function createMenu() {
         {
           label: 'Documentation',
           click: () => {
-            require('electron').shell.openExternal('https://github.com/IamBlackShifu/Chromation-AutoHeal-Browser');
+            require('electron').shell.openExternal('https://github.com/Infinity-Lines-of-Code/omniflow-qa');
           }
         },
         {
@@ -210,6 +255,12 @@ ipcMain.on('start-recording', (event, mode) => {
 
 ipcMain.on('export-script', (event, format) => {
   console.log('Exporting script in format:', format);
+});
+
+app.on('before-quit', () => {
+  mobileTouchCapture?.kill();
+  void appiumProcessManager.stopAll();
+  void scrcpyProcessManager.stopAll();
 });
 
 function configureGuestPermissions() {
@@ -339,6 +390,7 @@ ipcMain.handle('set-upload-files', async (event, request) => {
 // Recordings directory management
 const recordingsDir = path.join(app.getPath('userData'), 'saved-recordings');
 const runHistoryPath = path.join(app.getPath('userData'), 'run-history.json');
+const mobileProfilesPath = path.join(app.getPath('userData'), 'mobile-profiles.json');
 const browsingHistoryPath = path.join(app.getPath('userData'), 'browsing-history.json');
 
 function readBrowsingHistory() {
@@ -435,13 +487,15 @@ if (!fs.existsSync(recordingsDir)) {
 }
 
 // Save recording
-ipcMain.handle('save-recording', async (event, { name, actions }) => {
+ipcMain.handle('save-recording', async (event, { name, actions, target }) => {
   try {
     const timestamp = Date.now();
-    const filename = `${name.replace(/[^a-z0-9]/gi, '_')}_${timestamp}.json`;
+    const workspacePrefix = target?.platform === 'android' || target?.platform === 'ios' ? 'mobile' : 'web';
+    const cleanName = String(name || 'suite').replace(/^(web|mobile)_suite_/i, '').replace(/[^a-z0-9]/gi, '_');
+    const filename = `${workspacePrefix}_suite_${cleanName}_${timestamp}.json`;
     const filePath = path.join(recordingsDir, filename);
     
-    const recording = createRecordingDocument(name, actions, timestamp);
+    const recording = createRecordingDocument(name, actions, timestamp, target);
     
     fs.writeFileSync(filePath, JSON.stringify(recording, null, 2));
     console.log('Recording saved:', filePath);
@@ -609,6 +663,7 @@ ipcMain.handle('mobile-connect', async (event, request) => {
   try {
     assertTrustedRenderer(event);
     const config = validateMobileConnectionRequest(request);
+    mobileTouchCapture?.kill(); mobileTouchCapture = null;
     await mobileDriver?.close().catch(() => undefined);
     mobileDriver = new AndroidAutomationDriver(config);
     const sessionInfo = await mobileDriver.connect();
@@ -620,6 +675,132 @@ ipcMain.handle('mobile-connect', async (event, request) => {
   }
 });
 
+ipcMain.handle('mobile-appium-start', async (event, options) => {
+  try {
+    assertTrustedRenderer(event);
+    const instance = await appiumProcessManager.start({
+      startupTimeoutMs: Math.min(60_000, Math.max(1_000, Number(options?.startupTimeoutMs) || 20_000)),
+    });
+    return { success: true, instance };
+  } catch (error) { return { success: false, error: error.message }; }
+});
+
+ipcMain.handle('mobile-appium-status', async (event) => {
+  assertTrustedRenderer(event);
+  return { success: true, instances: appiumProcessManager.list() };
+});
+
+ipcMain.handle('mobile-appium-stop', async (event, instanceId) => {
+  try {
+    assertTrustedRenderer(event);
+    return { success: true, stopped: await appiumProcessManager.stop(String(instanceId || '')) };
+  } catch (error) { return { success: false, error: error.message }; }
+});
+
+ipcMain.handle('mobile-scrcpy-start', async (event, options) => {
+  try {
+    assertTrustedRenderer(event);
+    const mirror = await scrcpyProcessManager.start({ serial: String(options?.serial || ''), title: options?.title });
+    return { success: true, mirror };
+  } catch (error) { return { success: false, error: error.message }; }
+});
+
+ipcMain.handle('mobile-scrcpy-status', async (event) => {
+  assertTrustedRenderer(event);
+  return { success: true, mirrors: scrcpyProcessManager.list() };
+});
+
+ipcMain.handle('mobile-scrcpy-stop', async (event, mirrorId) => {
+  try { assertTrustedRenderer(event); return { success: true, stopped: await scrcpyProcessManager.stop(String(mirrorId || '')) }; }
+  catch (error) { return { success: false, error: error.message }; }
+});
+
+function runDoctorCommand(command, args, successPattern) {
+  try {
+    const output = execFileSync(command, args, { encoding: 'utf8', timeout: 8000, windowsHide: true });
+    return { ok: successPattern ? successPattern.test(output) : true, output: output.trim().slice(0, 1200) };
+  } catch (error) {
+    return { ok: false, output: String(error.stderr || error.message || error).trim().slice(0, 1200) };
+  }
+}
+
+ipcMain.handle('mobile-doctor', async (event) => {
+  assertTrustedRenderer(event);
+  const appium = runDoctorCommand(process.platform === 'win32' ? 'appium.cmd' : 'appium', ['--version']);
+  const drivers = runDoctorCommand(process.platform === 'win32' ? 'appium.cmd' : 'appium', ['driver', 'list', '--installed'], /uiautomator2/i);
+  const adb = runDoctorCommand('adb', ['version']);
+  const devices = runDoctorCommand('adb', ['devices', '-l'], /\n[^\n]+\sdevice(?:\s|$)/);
+  const scrcpy = runDoctorCommand(process.platform === 'win32' ? 'scrcpy.exe' : 'scrcpy', ['--version'], /scrcpy/i);
+  const java = runDoctorCommand('java', ['-version']);
+  const checks = [
+    { id: 'appium', label: 'Appium server', status: appium.ok ? 'passed' : 'failed', detail: appium.output || 'Not available', remedy: 'Install Appium 3 and ensure appium is on PATH.' },
+    { id: 'uiautomator2', label: 'UiAutomator2 driver', status: drivers.ok ? 'passed' : 'failed', detail: drivers.output || 'Not installed', remedy: 'Run appium driver install uiautomator2.' },
+    { id: 'adb', label: 'Android Debug Bridge', status: adb.ok ? 'passed' : 'failed', detail: adb.output || 'Not available', remedy: 'Install Android platform-tools and add adb to PATH.' },
+    { id: 'java', label: 'Java runtime', status: java.ok ? 'passed' : 'failed', detail: java.output || 'Not available', remedy: 'Install a supported JDK and configure JAVA_HOME.' },
+    { id: 'device', label: 'Authorized device', status: devices.ok ? 'passed' : 'warning', detail: devices.output || 'No device detected', remedy: 'Start an emulator or authorize USB debugging on a connected device.' },
+    { id: 'scrcpy', label: 'Low-latency mirror', status: scrcpy.ok ? 'passed' : 'warning', detail: scrcpy.output || 'scrcpy is not installed', remedy: 'Install scrcpy to enable the native low-latency control window; the embedded inspector will continue using MJPEG or screenshots.' },
+  ];
+  return { success: true, ready: checks.every((check) => check.status === 'passed'), checks, actionMatrix: ANDROID_ACTION_MATRIX };
+});
+
+ipcMain.handle('mobile-workspace-readiness', async (event, request) => {
+  try {
+    assertTrustedRenderer(event);
+    const adb = runDoctorCommand('adb', ['version']);
+    const serverUrl = new URL(String(request?.serverUrl || 'http://127.0.0.1:4723'));
+    if (!['127.0.0.1', 'localhost', '::1'].includes(serverUrl.hostname)) throw new Error('Only local Appium readiness checks are allowed');
+    const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), 1600);
+    let appium = false;
+    try { const response = await fetch(`${serverUrl.toString().replace(/\/$/, '')}/status`, { signal: controller.signal }); appium = response.ok; }
+    catch (_) { appium = false; }
+    finally { clearTimeout(timer); }
+    return { success: true, checks: { bridge: adb.ok, appium, appId: Boolean(String(request?.appId || '').trim()) }, checkedAt: Date.now() };
+  } catch (error) { return { success: false, error: error.message, checks: { bridge: false, appium: false, appId: false } }; }
+});
+
+ipcMain.handle('mobile-list-devices', async (event) => {
+  try {
+    assertTrustedRenderer(event);
+    return { success: true, devices: await androidDeviceDiscovery.list(), refreshedAt: Date.now() };
+  } catch (error) { return { success: false, error: error.message, devices: [] }; }
+});
+
+ipcMain.handle('mobile-preflight', async (event, request) => {
+  try {
+    assertTrustedRenderer(event);
+    const actions = Array.isArray(request?.actions) ? request.actions.map(validateRecordedAction) : [];
+    validateMobileConnectionRequest(request?.connection);
+    return { success: true, ...preflightAndroidActions(actions) };
+  } catch (error) { return { success: false, supported: false, error: error.message, unsupported: [], warnings: [] }; }
+});
+
+ipcMain.handle('mobile-load-profiles', async (event) => {
+  assertTrustedRenderer(event);
+  try { return { success: true, profiles: fs.existsSync(mobileProfilesPath) ? JSON.parse(fs.readFileSync(mobileProfilesPath, 'utf8')) : [] }; }
+  catch (error) { return { success: false, error: error.message, profiles: [] }; }
+});
+
+ipcMain.handle('mobile-save-profile', async (event, value) => {
+  try {
+    assertTrustedRenderer(event);
+    const profile = validateMobileProfile(value);
+    const profiles = fs.existsSync(mobileProfilesPath) ? JSON.parse(fs.readFileSync(mobileProfilesPath, 'utf8')) : [];
+    const updated = [...profiles.filter((item) => item.id !== profile.id), profile].sort((a, b) => a.name.localeCompare(b.name));
+    fs.writeFileSync(mobileProfilesPath, JSON.stringify(updated, null, 2));
+    return { success: true, profile, profiles: updated };
+  } catch (error) { return { success: false, error: error.message }; }
+});
+
+ipcMain.handle('mobile-delete-profile', async (event, profileId) => {
+  try {
+    assertTrustedRenderer(event);
+    const profiles = fs.existsSync(mobileProfilesPath) ? JSON.parse(fs.readFileSync(mobileProfilesPath, 'utf8')) : [];
+    const updated = profiles.filter((item) => item.id !== String(profileId));
+    fs.writeFileSync(mobileProfilesPath, JSON.stringify(updated, null, 2));
+    return { success: true, profiles: updated };
+  } catch (error) { return { success: false, error: error.message }; }
+});
+
 ipcMain.handle('mobile-status', async (event) => {
   try {
     assertTrustedRenderer(event);
@@ -627,6 +808,51 @@ ipcMain.handle('mobile-status', async (event) => {
   } catch (error) {
     return { success: false, error: error.message };
   }
+});
+
+ipcMain.handle('mobile-touch-capture-start', async (event, request) => {
+  try {
+    assertTrustedRenderer(event);
+    const serial = String(request?.serial || '').trim();
+    if (!/^[A-Za-z0-9._:-]+$/.test(serial)) throw new Error('A valid device serial is required for physical touch capture');
+    const inputProfile = execFileSync('adb', ['-s', serial, 'shell', 'getevent', '-lp'], { encoding: 'utf8', timeout: 8000, windowsHide: true });
+    const rawWidth = Number(inputProfile.match(/ABS_MT_POSITION_X\s*:.*?max\s+(\d+)/)?.[1]) + 1;
+    const rawHeight = Number(inputProfile.match(/ABS_MT_POSITION_Y\s*:.*?max\s+(\d+)/)?.[1]) + 1;
+    if (!rawWidth || !rawHeight) throw new Error('Could not determine the Android touch-controller coordinate range');
+    const inputState = execFileSync('adb', ['-s', serial, 'shell', 'dumpsys', 'input'], { encoding: 'utf8', timeout: 8000, windowsHide: true });
+    const rotation = Number(inputState.match(/Viewport INTERNAL:[\s\S]*?orientation=(\d)/)?.[1] || 0);
+    mobileTouchCapture?.kill();
+    const child = spawn('adb', ['-s', serial, 'shell', 'getevent', '-lt'], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    mobileTouchCapture = child;
+    mobileTouchCaptureStatus = { state: 'starting', serial, pid: child.pid, bytes: 0, chunks: 0, touches: 0, keys: 0, error: null };
+    const parser = new AndroidInputEventParser();
+    child.stdout.on('data', (chunk) => {
+      mobileTouchCaptureStatus.bytes += chunk.length; mobileTouchCaptureStatus.chunks += 1;
+      const parsed = parser.push(chunk.toString());
+      mobileTouchCaptureStatus.touches += parsed.touches.length; mobileTouchCaptureStatus.keys += parsed.keys.length;
+      parsed.touches.forEach((sample) => mainWindow?.webContents.send('mobile-native-touch', sample));
+      parsed.keys.forEach((key) => mainWindow?.webContents.send('mobile-native-key', key));
+    });
+    child.stderr.on('data', (chunk) => { const error = chunk.toString().trim().slice(0, 500); mobileTouchCaptureStatus.error = error; mainWindow?.webContents.send('mobile-touch-capture-error', error); });
+    child.once('exit', (code) => { mobileTouchCaptureStatus.state = 'stopped'; mobileTouchCaptureStatus.exitCode = code; if (mobileTouchCapture === child) mobileTouchCapture = null; });
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(resolve, 300);
+      child.once('error', (error) => { clearTimeout(timer); reject(error); });
+      child.once('exit', (code) => { clearTimeout(timer); reject(new Error(`ADB input stream exited during startup (${code ?? 'unknown'})`)); });
+    });
+    mobileTouchCaptureStatus.state = 'running';
+    return { success: true, pid: child.pid, calibration: { rawWidth, rawHeight, rotation } };
+  } catch (error) { return { success: false, error: error.message }; }
+});
+
+ipcMain.handle('mobile-touch-capture-stop', async (event) => {
+  assertTrustedRenderer(event);
+  mobileTouchCapture?.kill(); mobileTouchCapture = null;
+  return { success: true };
+});
+
+ipcMain.handle('mobile-touch-capture-status', async (event) => {
+  assertTrustedRenderer(event); return { success: true, status: { ...mobileTouchCaptureStatus } };
 });
 
 ipcMain.handle('mobile-inspect', async (event) => {
@@ -646,13 +872,68 @@ ipcMain.handle('mobile-action', async (event, request) => {
     assertTrustedRenderer(event);
     if (!mobileDriver?.isConnected()) throw new Error('No mobile device session is connected');
     const action = validateRecordedAction(request?.action);
-    if (!['tap', 'click', 'input', 'clear', 'back', 'hideKeyboard', 'rotate', 'switchContext'].includes(action.type)) {
+    if (!['tap', 'click', 'doubleclick', 'input', 'clear', 'back', 'hideKeyboard', 'rotate', 'switchContext',
+      'longPress', 'swipe', 'scroll', 'launchApp', 'terminateApp', 'resetApp', 'deepLink',
+      'acceptAlert', 'dismissAlert', 'grantPermission', 'revokePermission', 'installApp', 'upload',
+      'clearAppData', 'mobileKey'].includes(action.type)) {
       throw new Error(`Live mobile action ${action.type} is not allowed`);
     }
     await mobileDriver.executeLiveAction(action);
     const inspection = await mobileDriver.inspectHierarchy();
     const status = await mobileDriver.getLiveStatus();
     return { success: true, inspection, status };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('mobile-replay', async (event, request) => {
+  try {
+    assertTrustedRenderer(event);
+    const actions = request?.actions;
+    if (!Array.isArray(actions)) throw new Error('Mobile replay actions must be an array');
+    let validated = actions.map(validateRecordedAction);
+    const appId = String(request?.connection?.appId || '').trim();
+    const appActivity = String(request?.connection?.appActivity || '').trim();
+    if (!appId) throw new Error('Mobile replay requires a package name or bundle identifier');
+    const launchAction = { id: `mobile_${Date.now()}_bootstrap`, schemaVersion: 1, type: 'launchApp', selector: 'device', value: appId,
+      timestamp: Date.now(), metadata: { mobileReplayBootstrap: true, appActivity, resetAppState: request?.options?.resetAppState === true } };
+    validated = validated[0]?.type === 'launchApp'
+      ? [{ ...validated[0], value: appId, metadata: { ...(validated[0].metadata || {}), ...launchAction.metadata } }, ...validated.slice(1)]
+      : [validateRecordedAction(launchAction), ...validated];
+    let driver = mobileDriver;
+    if (!driver?.isConnected()) {
+      const config = validateMobileConnectionRequest(request?.connection);
+      driver = new AndroidAutomationDriver(config);
+    }
+    if (['automatic', 'ask', 'report-only'].includes(request?.healingPolicy)) driver.setHealingApprovalPolicy(request.healingPolicy);
+    mobileReplayDriver = driver;
+    const execution = await driver.execute(validated, request?.options);
+    const healingHistory = driver.getHealingHistory();
+    if (driver === mobileDriver) {
+      return { success: true, execution, healingHistory, sessionReused: true, status: await driver.getLiveStatus() };
+    }
+    return { success: true, execution, healingHistory, sessionReused: false };
+  } catch (error) {
+    return { success: false, error: error.message };
+  } finally {
+    mobileReplayDriver = null;
+  }
+});
+
+ipcMain.handle('mobile-cancel-replay', async (event) => {
+  try {
+    assertTrustedRenderer(event);
+    return { success: true, cancelled: mobileReplayDriver?.cancel('Replay cancelled by user') ?? false };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('mobile-replay-status', async (event) => {
+  try {
+    assertTrustedRenderer(event);
+    return { success: true, state: mobileReplayDriver?.getState() || { state: 'idle', currentStep: -1, totalSteps: 0 } };
   } catch (error) {
     return { success: false, error: error.message };
   }
@@ -669,6 +950,25 @@ ipcMain.handle('mobile-disconnect', async (event) => {
   }
 });
 
+ipcMain.handle('workspace-teardown', async (event, workspace) => {
+  try {
+    assertTrustedRenderer(event);
+    const leaving = String(workspace || '');
+    if (leaving === 'mobile') {
+      mobileReplayDriver?.cancel('Workspace switched');
+      mobileReplayDriver = null;
+      mobileTouchCapture?.kill(); mobileTouchCapture = null;
+      mobileTouchCaptureStatus = { state: 'idle', bytes: 0, chunks: 0, touches: 0, keys: 0, error: null };
+      await mobileDriver?.disconnect().catch(() => undefined);
+      mobileDriver = null;
+      await Promise.all([appiumProcessManager.stopAll(), scrcpyProcessManager.stopAll()]);
+    }
+    return { success: true, workspace: leaving };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
 // Rename a recording while keeping its actions and metadata intact.
 ipcMain.handle('rename-recording', async (event, { filename, name }) => {
   try {
@@ -677,7 +977,8 @@ ipcMain.handle('rename-recording', async (event, { filename, name }) => {
     const sourcePath = resolveRecordingPath(filename);
     const recording = parseRecordingDocument(JSON.parse(readRecordingFile(sourcePath)));
     const timestamp = Number(recording.timestamp) || Date.now();
-    const targetFilename = `${cleanName.replace(/[^a-z0-9]/gi, '_')}_${timestamp}.json`;
+    const workspacePrefix = recording.target?.platform === 'android' || recording.target?.platform === 'ios' ? 'mobile' : 'web';
+    const targetFilename = `${workspacePrefix}_suite_${cleanName.replace(/^(web|mobile)_suite_/i, '').replace(/[^a-z0-9]/gi, '_')}_${timestamp}.json`;
     const targetPath = path.join(recordingsDir, targetFilename);
     if (targetPath !== sourcePath && fs.existsSync(targetPath)) throw new Error('A recording with that name already exists');
     const updated = { ...recording, name: cleanName, updatedAt: new Date().toISOString() };
@@ -761,4 +1062,4 @@ ipcMain.on('window-close', () => {
   }
 });
 
-console.log('Chromation AutoHeal Browser starting...');
+console.log('Initializing OmniFlow QA Engine...');

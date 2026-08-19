@@ -12,9 +12,11 @@ const ACTION_TYPES = new Set<ActionType>([
   'plugin',
   'tap', 'longPress', 'swipe', 'back', 'rotate', 'clear', 'launchApp',
   'terminateApp', 'switchContext', 'hideKeyboard',
+  'deepLink', 'acceptAlert', 'dismissAlert', 'grantPermission', 'revokePermission', 'resetApp', 'installApp',
+  'clearAppData', 'mobileKey',
 ]);
 const ASSERTION_KINDS = new Set<AssertionMetadata['kind']>([
-  'text-contains', 'visible', 'value-equals', 'attribute-equals', 'count-equals',
+  'text-contains', 'visible', 'enabled', 'value-equals', 'attribute-equals', 'count-equals',
   'url-equals', 'url-contains', 'title-equals', 'response-status',
 ]);
 const WAIT_KINDS = new Set(['time', 'element', 'url', 'response', 'dom', 'page-load']);
@@ -249,7 +251,7 @@ function validateAutomationTarget(value: unknown): AutomationTarget {
   if (value.platform !== 'web' && value.mode === 'web') {
     throw new RecordingValidationError(['mobile targets cannot use web mode']);
   }
-  for (const field of ['name', 'appId', 'deviceProfile'] as const) {
+  for (const field of ['name', 'appId', 'appActivity', 'deviceProfile'] as const) {
     if (value[field] !== undefined && (typeof value[field] !== 'string' || value[field].length > 500)) {
       throw new RecordingValidationError([`target.${field} must be a string no longer than 500 characters`]);
     }

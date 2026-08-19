@@ -6,9 +6,18 @@ describe('Mobile Electron IPC bridge', () => {
   const preload = fs.readFileSync(path.join(process.cwd(), 'preload.js'), 'utf8');
 
   test('allowlists every mobile request in preload', () => {
-    for (const channel of ['mobile-connect', 'mobile-status', 'mobile-inspect', 'mobile-action', 'mobile-disconnect']) {
+    for (const channel of ['mobile-connect', 'mobile-doctor', 'mobile-list-devices', 'mobile-preflight', 'mobile-load-profiles', 'mobile-save-profile', 'mobile-delete-profile', 'mobile-status', 'mobile-inspect', 'mobile-action', 'mobile-replay', 'mobile-cancel-replay', 'mobile-replay-status', 'mobile-disconnect', 'mobile-touch-capture-status']) {
       expect(preload).toContain(`'${channel}'`);
     }
+  });
+
+  test('provides setup diagnostics, profiles, preflight, and the Phase 2 compatibility matrix', () => {
+    for (const channel of ['mobile-doctor', 'mobile-list-devices', 'mobile-preflight', 'mobile-load-profiles', 'mobile-save-profile', 'mobile-delete-profile']) {
+      expect(main).toContain(`ipcMain.handle('${channel}'`);
+    }
+    expect(main).toContain('ANDROID_ACTION_MATRIX');
+    expect(main).toContain("'appium.cmd'");
+    expect(main).toContain("'adb', ['devices', '-l']");
   });
 
   test('validates renderer origin, local Appium URL, platform, and device name', () => {
@@ -25,5 +34,15 @@ describe('Mobile Electron IPC bridge', () => {
     }
     expect(main).toContain('new AndroidAutomationDriver(config)');
     expect(main).toContain('mobileDriver.inspectHierarchy()');
+  });
+
+  test('routes replay through the Android driver and preserves recording targets', () => {
+    expect(main).toContain("ipcMain.handle('mobile-replay'");
+    expect(main).toContain('driver.execute(validated, request?.options)');
+    expect(main).toContain("ipcMain.handle('mobile-replay-status'");
+    expect(main).toContain('mobileReplayBootstrap: true');
+    expect(main).toContain("'appium:autoGrantPermissions': true");
+    expect(main).toContain('sessionReused: true');
+    expect(main).toContain('createRecordingDocument(name, actions, timestamp, target)');
   });
 });

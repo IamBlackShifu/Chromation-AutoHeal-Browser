@@ -4,15 +4,31 @@
   <meta charset="UTF-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:;">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Chromation AutoHeal Browser</title>
+  <title>OmniFlow QA</title>
   <link rel="stylesheet" href="styles.css">
 </head>
-<body>
+<body class="workspace-unselected">
+  <div class="workspace-launcher hidden" id="workspace-launcher" role="dialog" aria-modal="true" aria-labelledby="workspace-launcher-title">
+    <div class="workspace-launcher-dialog">
+      <div class="workspace-launcher-brand"><img class="workspace-launcher-wordmark" src="../assets/omniflow-qa-logo.png" alt="OmniFlow QA logo"></div>
+      <header><p class="eyebrow">CHOOSE YOUR TARGET</p><h1 id="workspace-launcher-title">Welcome to OmniFlow QA</h1><p>Select your automation workspace target to begin:</p></header>
+      <div class="workspace-launcher-grid">
+        <button class="workspace-launcher-card web" type="button" data-launch-workspace="web"><span class="workspace-card-icon">🌐</span><span class="workspace-card-copy"><strong>Web Automation Studio</strong><small>Desktop and mobile browsers</small><em>Playwright · Chrome · Firefox · Safari · Edge</em></span><span class="workspace-card-action">Launch Web Studio <b>→</b></span></button>
+        <button class="workspace-launcher-card mobile" type="button" data-launch-workspace="mobile"><span class="workspace-card-icon">📱</span><span class="workspace-card-copy"><strong>Mobile Automation Studio</strong><small>Native and hybrid applications</small><em>Appium 3 · Android · iOS</em></span><span class="workspace-card-action">Launch Mobile Studio <b>→</b></span></button>
+      </div>
+      <label class="workspace-default-choice"><input id="workspace-launch-default" type="checkbox"><span>Always launch into this workspace mode</span></label>
+      <footer>Powered by <strong>Infinity Lines of Code Pvt Ltd</strong></footer>
+    </div>
+  </div>
+  <div class="brand-splash" id="brand-splash" aria-live="polite"><div class="brand-splash-mark"><img src="../assets/omniflow-qa-icon.png" alt=""></div><strong>OmniFlow QA</strong><span>Initializing OmniFlow QA Engine...</span><small>© 2026 Infinity Lines of Code Pvt Ltd. All rights reserved.</small></div>
   <!-- Main Browser Container -->
   <div class="browser-container">
     
     <!-- Chrome-style Tab Bar with Draggable Region -->
     <div class="tab-bar" id="title-bar">
+      <div class="app-identity" title="Unified Web &amp; Mobile QA Automation Studio"><img src="../assets/omniflow-qa-icon.png" alt=""><span><strong>OmniFlow QA</strong><small>by Infinity Lines of Code</small></span></div>
+      <label class="workspace-switcher" title="Switch automation workspace"><span class="workspace-switcher-dot"></span><select id="workspace-switcher" aria-label="Active automation workspace"><option value="web">Web Workspace</option><option value="mobile">Mobile Workspace</option></select></label>
+      <button id="header-theme-toggle" class="header-theme-toggle" type="button" title="Change color theme" aria-label="Change color theme"><span aria-hidden="true">◐</span><small>System</small></button>
       <div class="tabs-container" id="tabs-container">
         <div class="tab active" data-tab-id="1">
           <div class="tab-favicon">🌐</div>
@@ -22,9 +38,9 @@
       </div>
       <button id="btn-new-tab" class="new-tab-btn" title="New tab">+</button>
       <div class="window-controls">
-        <button class="window-btn minimize-btn">−</button>
-        <button class="window-btn maximize-btn">□</button>
-        <button class="window-btn close-btn">×</button>
+        <button class="window-btn minimize-btn" title="Minimize" aria-label="Minimize window"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 6.5h8"/></svg></button>
+        <button class="window-btn maximize-btn" title="Maximize" aria-label="Maximize window" aria-pressed="false"><svg class="maximize-icon" viewBox="0 0 12 12" aria-hidden="true"><rect x="2.25" y="2.25" width="7.5" height="7.5" rx=".5"/></svg><svg class="restore-icon" viewBox="0 0 12 12" aria-hidden="true"><path d="M4 3V2h6v6H9M2 4h6v6H2z"/></svg></button>
+        <button class="window-btn close-btn" title="Close" aria-label="Close window"><svg viewBox="0 0 12 12" aria-hidden="true"><path d="m2.5 2.5 7 7m0-7-7 7"/></svg></button>
       </div>
     </div>
     
@@ -56,7 +72,7 @@
 
       <!-- Address Bar -->
       <div class="address-bar">
-        <div class="security-icon" id="security-icon">🔒</div>
+        <div class="security-icon" id="security-icon" aria-hidden="true"><svg viewBox="0 0 20 20"><circle cx="9" cy="9" r="6"/><path d="m13.5 13.5 4 4"/></svg></div>
         <input 
           type="text" 
           id="url-input" 
@@ -64,11 +80,15 @@
           autocomplete="off"
         />
         <div class="loading-indicator" id="loading-indicator"></div>
+        <button id="btn-clear-url" class="address-action clear-url-btn hidden" title="Clear address" aria-label="Clear address"><svg viewBox="0 0 16 16"><path d="m4 4 8 8m0-8-8 8"/></svg></button>
+        <chromation-target-environment class="target-environment" id="target-environment" data-platform="web" data-name="Chrome"><i></i><span data-target-label>Web · Chrome</span></chromation-target-environment>
         <button id="btn-bookmark" class="bookmark-btn" title="Bookmark this page">★</button>
       </div>
 
       <!-- Menu Button -->
       <div class="tool-controls">
+        <button class="web-toolbar-action" id="web-toolbar-inspect" type="button" title="Inspect page"><span>⌖</span> Inspect</button>
+        <button class="web-toolbar-action record" id="web-toolbar-record" type="button" title="Open recorder"><span>●</span> Record</button>
         <button id="btn-menu" class="menu-btn" title="Menu">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="5" r="1" fill="currentColor"></circle>
@@ -183,6 +203,7 @@
 
     <div class="workspace-shell">
       <aside class="tool-rail" id="tool-rail" aria-label="Automation tools">
+        <button class="rail-collapse" id="rail-collapse" title="Collapse navigation" aria-label="Collapse navigation" aria-expanded="true"><span>‹</span><b>OmniFlow QA</b></button>
         <button class="rail-action active" data-workspace="browse" title="Browse (Ctrl+Shift+B)" aria-label="Browse"><span class="rail-icon">⌂</span><span>Browse</span></button>
         <button class="rail-action" data-tool="inspector" title="Inspect (Ctrl+Shift+I)" aria-label="Inspect"><span class="rail-icon">⌖</span><span>Inspect</span></button>
         <button class="rail-action" data-tool="recorder" title="Record (Ctrl+Shift+R)" aria-label="Record"><span class="rail-icon">●</span><span>Record</span><span class="rail-badge recording-dot hidden" id="rail-recording-badge"></span><span class="rail-badge" id="rail-action-count">0</span></button>
@@ -196,7 +217,7 @@
 
       <!-- Main Content Area -->
       <div class="main-content">
-        <section class="home-workspace" id="home-workspace" aria-label="Chromation workspace">
+        <section class="home-workspace" id="home-workspace" aria-label="OmniFlow QA workspace">
           <header class="home-hero">
             <div><p class="eyebrow">AUTOMATION WORKSPACE</p><h1>Good testing starts here.</h1><p>Record a flow, replay a suite, or inspect recent execution health.</p></div>
             <button class="primary-action" id="home-start-recording">● Start recording</button>
@@ -208,10 +229,10 @@
             <button data-workflow-destination="reports"><span>4</span><strong>Analyze</strong><small>Compare results and fix failures</small></button>
           </nav>
           <div class="health-grid">
-            <article><span>Project health</span><strong id="home-health-score">—</strong><small>Pass rate</small></article>
-            <article><span>Recent runs</span><strong id="home-run-count">0</strong><small>Execution history</small></article>
-            <article><span>Failures</span><strong id="home-failure-count">0</strong><small>Needs attention</small></article>
-            <article><span>Auto-healed</span><strong id="home-healed-count">0</strong><small>Recovered locators</small></article>
+            <article class="kpi-card health"><div class="kpi-ring" id="home-health-ring"><strong id="home-health-score">—</strong></div><div><span>Project health</span><small>Pass rate across completed runs</small></div></article>
+            <article class="kpi-card runs"><i>↗</i><div><span>Recent runs</span><strong id="home-run-count">0</strong><small>Execution history</small></div></article>
+            <article class="kpi-card failures"><i>!</i><div><span>Failures</span><strong id="home-failure-count">0</strong><small>Needs attention</small></div></article>
+            <article class="kpi-card healed"><i>✓</i><div><span>Auto-healed</span><strong id="home-healed-count">0</strong><small>Recovered locators</small></div></article>
           </div>
           <div class="home-grid">
             <section class="home-card wide"><div class="card-heading"><h2>Recent recordings</h2><button id="home-all-recordings">View all</button></div><div class="recent-list" id="home-recent-recordings"><p class="empty-state">No recordings yet.</p></div></section>
@@ -226,7 +247,7 @@
           style="width: 100%; height: 100%;"
           partition="persist:chromation"
           allowpopups
-          useragent="Chromation-AutoHeal-Browser/1.0"
+          useragent="OmniFlow-QA/0.3"
         ></webview>
       </div>
 
@@ -250,15 +271,16 @@
 
     <!-- Status Bar -->
     <div class="status-bar">
-      <div class="status-item">
-        <span id="status-text">Ready</span>
+      <div class="status-item status-pill ready-pill">
+        <i></i><span id="status-text">Ready</span>
       </div>
-      <div class="status-item">
-        <span id="healing-status">🔧 Auto-heal: ON</span>
+      <div class="status-item status-pill healing-pill">
+        <i></i><span id="healing-status">Auto-heal · ON</span>
       </div>
       <div class="status-item">
         <span id="recording-status"></span>
       </div>
+      <div class="status-brand">OmniFlow QA <span>·</span> Infinity Lines of Code Pvt Ltd</div>
     </div>
   </div>
 
@@ -287,6 +309,37 @@
       <div class="dialog-mark warning">!</div><div><h2 id="confirmation-title">Confirm action</h2><p class="dialog-copy" id="confirmation-message"></p></div>
       <div class="dialog-actions"><button class="secondary-btn" id="confirmation-cancel">Cancel</button><button class="primary-action danger-action" id="confirmation-accept">Confirm</button></div>
     </div>
+  </div>
+  <div class="save-dialog-backdrop hidden" id="mobile-text-dialog" role="dialog" aria-modal="true" aria-labelledby="mobile-text-title">
+    <form class="save-dialog" id="mobile-text-form">
+      <div class="save-dialog-icon">⌨</div><div><p class="eyebrow">MOBILE INPUT</p><h3 id="mobile-text-title">Enter text for selected field</h3></div>
+      <p id="mobile-text-context" class="save-dialog-context">The value becomes an editable input step.</p>
+      <label class="form-group"><span class="form-label">Text</span><input id="mobile-text-value" class="form-input" autocomplete="off"></label>
+      <label class="preference-row"><span><strong>Clear existing value</strong><small>Clear the field before typing.</small></span><input id="mobile-text-clear" type="checkbox" checked></label>
+      <label class="preference-row"><span><strong>Sensitive value</strong><small>Store a redacted placeholder instead of plaintext.</small></span><input id="mobile-text-sensitive" type="checkbox"></label>
+      <div class="save-dialog-actions"><button id="mobile-text-cancel" type="button" class="secondary-btn">Cancel</button><button type="submit" class="primary-btn">Type and capture</button></div>
+    </form>
+  </div>
+
+  <div class="save-dialog-backdrop hidden" id="mobile-assertion-dialog" role="dialog" aria-modal="true" aria-labelledby="mobile-assertion-title">
+    <form class="save-dialog" id="mobile-assertion-form">
+      <div class="save-dialog-icon">✓</div><div><p class="eyebrow">MOBILE ASSERTION</p><h3 id="mobile-assertion-title">Verify selected element</h3></div>
+      <p id="mobile-assertion-context" class="save-dialog-context">Choose the condition OmniFlow QA should verify during replay.</p>
+      <label class="form-group"><span class="form-label">Condition</span><select id="mobile-assertion-kind" class="form-select"><option value="visible">Element is visible</option><option value="text">Text contains</option><option value="enabled">Element is enabled</option></select></label>
+      <label class="form-group" id="mobile-assertion-expected-field" hidden><span class="form-label">Expected text</span><input id="mobile-assertion-expected" class="form-input" autocomplete="off"></label>
+      <div class="save-dialog-actions"><button id="mobile-assertion-cancel" type="button" class="secondary-btn">Cancel</button><button type="submit" class="primary-btn">Add assertion</button></div>
+    </form>
+  </div>
+
+  <div class="save-dialog-backdrop hidden" id="mobile-target-dialog" role="dialog" aria-modal="true" aria-labelledby="mobile-target-title">
+    <form class="save-dialog" id="mobile-target-form">
+      <div class="save-dialog-icon">▣</div><div><p class="eyebrow">APPLICATION TARGET</p><h3 id="mobile-target-title">Identify the Android application</h3></div>
+      <p class="save-dialog-context">Recording needs an exact package and launch activity so Step 1 can always start the correct application.</p>
+      <label class="form-group"><span class="form-label">Package name</span><input id="mobile-target-package" class="form-input" placeholder="com.example.app" autocomplete="off" spellcheck="false" required></label>
+      <label class="form-group" id="mobile-target-activity-field"><span class="form-label">Main activity</span><input id="mobile-target-activity" class="form-input" placeholder=".MainActivity" autocomplete="off" spellcheck="false" required></label>
+      <p id="mobile-target-error" class="field-error" aria-live="polite"></p>
+      <div class="save-dialog-actions"><button id="mobile-target-cancel" type="button" class="secondary-btn">Cancel</button><button type="submit" class="primary-btn">Save target &amp; record</button></div>
+    </form>
   </div>
 
   <div class="onboarding-backdrop hidden" id="onboarding-dialog" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
@@ -471,6 +524,7 @@
             <button class="active" data-step-filter="all">All</button><button data-step-filter="passed">Passed</button><button data-step-filter="failed">Failed</button><button data-step-filter="healed">Healed</button><button data-step-filter="skipped">Skipped</button><button data-step-filter="disabled">Disabled</button>
           </div>
         </div>
+        <label class="preference-row" style="margin-top:8px"><span><strong>Reset app state before replay</strong><small>Mobile only: clear local application data before deterministic launch.</small></span><input id="replay-reset-app-state" type="checkbox"></label>
         <div id="actions-list" class="actions-list">
           <div class="empty-state">
             <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -538,18 +592,18 @@
         <summary class="card-header"><h5>Suites & Matrix Runs</h5><span class="badge">Organize</span></summary>
         <div class="card-content">
           <div class="suite-helper"><strong>Build once, run many ways</strong><p>A suite is a named group of recorded tests. Create one, add the current recording, then choose browsers and concurrency.</p><button type="button" id="suite-help-btn">How suites work</button></div>
-          <label class="workflow-field"><span>1. Create or choose a suite</span><div class="form-row"><input id="suite-name" class="form-input" placeholder="e.g. Checkout smoke">
+          <section class="suite-step-card active"><header><span>1</span><div><strong>Choose a suite</strong><small>Name and organize the test collection.</small></div></header><label class="workflow-field"><div class="form-row"><input id="suite-name" class="form-input" placeholder="e.g. Checkout smoke">
             <input id="suite-tags" class="form-input" placeholder="smoke, checkout"></div></label>
           <button id="create-suite-btn" class="secondary-btn full-width">Create suite</button>
           <select id="suite-select" class="form-select" aria-label="Selected suite"><option value="">Select a suite</option></select>
-          <div id="suite-selection-summary" class="suite-selection-summary">Choose a suite to see its tests.</div>
-          <label class="workflow-field"><span>2. Add the current recording</span><div class="form-row"><input id="suite-test-name" class="form-input" placeholder="e.g. Card payment">
+          <div id="suite-selection-summary" class="suite-selection-summary">Choose a suite to see its tests.</div></section>
+          <section class="suite-step-card"><header><span>2</span><div><strong>Add a recording</strong><small>Attach the test currently open in Recorder.</small></div></header><label class="workflow-field"><div class="form-row"><input id="suite-test-name" class="form-input" placeholder="e.g. Card payment">
             <input id="suite-test-tags" class="form-input" placeholder="smoke, critical"></div></label>
-          <button id="add-suite-test-btn" class="secondary-btn full-width">Add current recording to suite</button>
-          <label class="workflow-field"><span>3. Choose the run matrix</span><div class="form-row"><input id="matrix-browsers" class="form-input" value="chrome" placeholder="chrome, msedge" title="Comma-separated browser names">
-            <input id="matrix-concurrency" class="form-input" type="number" min="1" max="32" value="2" title="Maximum parallel jobs"></div></label>
+          <button id="add-suite-test-btn" class="secondary-btn full-width">Add current recording to suite</button></section>
+          <section class="suite-step-card"><header><span>3</span><div><strong>Configure matrix</strong><small>Select browsers and parallel capacity.</small></div></header><label class="workflow-field"><span>Browsers</span><input id="matrix-browsers" type="hidden" value="chrome"><div class="browser-tag-picker" id="matrix-browser-picker"><button type="button" class="browser-tag selected" data-browser="chrome"><i>◉</i>Chrome</button><button type="button" class="browser-tag" data-browser="msedge"><i>◇</i>Edge</button><button type="button" class="browser-tag" data-browser="firefox"><i>●</i>Firefox</button></div></label>
+          <label class="workflow-field"><span>Parallel jobs</span><div class="counter-stepper"><button type="button" id="matrix-concurrency-down" aria-label="Decrease concurrency">−</button><input id="matrix-concurrency" class="form-input" type="number" min="1" max="32" value="2" title="Maximum parallel jobs"><button type="button" id="matrix-concurrency-up" aria-label="Increase concurrency">+</button></div></label>
           <button id="run-suite-matrix-btn" class="primary-btn full-width">Run selected suite</button>
-          <pre id="matrix-run-summary" class="project-summary">No matrix run yet.</pre>
+          <pre id="matrix-run-summary" class="project-summary">No matrix run yet.</pre></section>
         </div>
       </details>
 
@@ -590,6 +644,9 @@
         <div class="form-group">
           <label class="form-label">Script Format</label>
           <select id="export-format-select" class="form-select">
+            <option value="appium-typescript">Appium (TypeScript)</option>
+            <option value="appium-java">Appium (Java)</option>
+            <option value="appium-python">Appium (Python)</option>
             <option value="playwright">Playwright</option>
             <option value="selenium-js">Selenium (JS)</option>
             <option value="selenium-python">Selenium (Python)</option>
@@ -723,41 +780,96 @@
         <span id="mobile-connection-state" class="mobile-state disconnected"><i></i>Disconnected</span>
       </div>
 
-      <div class="panel-card">
-        <div class="card-header"><h5>Target configuration</h5><span class="badge">Appium</span></div>
+      <div class="panel-card mobile-target-config">
+        <div class="card-header"><div><h5>Target configuration</h5><small class="mobile-card-subtitle">Connect once, then inspect, author, and replay.</small></div><span class="badge">Appium</span></div>
         <div class="card-content mobile-config-grid">
+          <label class="form-group mobile-config-wide"><span class="form-label">Saved profile</span><div class="mobile-profile-row"><select id="mobile-profile" class="form-select"><option value="">Custom configuration</option></select><button id="mobile-save-profile" class="secondary-btn" type="button">Save</button><button id="mobile-delete-profile" class="icon-btn" type="button" title="Delete selected profile" aria-label="Delete selected profile">×</button></div></label>
           <label class="form-group"><span class="form-label">Platform</span><select id="mobile-platform" class="form-select"><option value="android">Android</option><option value="ios">iOS</option></select></label>
           <label class="form-group"><span class="form-label">Application mode</span><select id="mobile-mode" class="form-select"><option value="native">Native</option><option value="hybrid">Hybrid</option><option value="mobileWeb">Mobile web</option></select></label>
           <label class="form-group mobile-config-wide"><span class="form-label">Appium server</span><input id="mobile-server-url" class="form-input" value="http://127.0.0.1:4723" spellcheck="false"></label>
+          <label class="preference-row mobile-config-wide"><span><strong>Manage local Appium</strong><small>Start an isolated server and reserve device ports automatically.</small></span><input id="mobile-managed-appium" type="checkbox"></label>
+          <div class="form-group mobile-config-wide" id="mobile-device-picker"><span class="form-label">Connected device</span><div class="mobile-device-picker"><select id="mobile-connected-device" class="form-select"><option value="">Scanning connected devices…</option></select><button id="mobile-refresh-devices" class="icon-btn" type="button" title="Refresh connected devices" aria-label="Refresh connected devices">↻</button></div><small id="mobile-device-picker-hint">Choose a ready USB, emulator, or network target. Manual fields remain available below.</small></div>
           <label class="form-group"><span class="form-label">Device</span><input id="mobile-device-name" class="form-input" placeholder="Pixel_8_API_35"></label>
           <label class="form-group"><span class="form-label">Device serial / UDID</span><input id="mobile-device-udid" class="form-input" placeholder="emulator-5554"></label>
-          <label class="form-group"><span class="form-label">App package / bundle ID</span><input id="mobile-app-id" class="form-input" placeholder="org.example.app"></label>
+          <label class="form-group"><span class="form-label" id="mobile-app-id-label">Android package name</span><input id="mobile-app-id" class="form-input" placeholder="com.example.app" autocomplete="off" spellcheck="false"></label>
+          <label class="form-group" id="mobile-app-activity-field"><span class="form-label">Main activity</span><input id="mobile-app-activity" class="form-input" placeholder=".MainActivity" autocomplete="off" spellcheck="false"></label>
+          <details class="mobile-advanced mobile-config-wide"><summary>Advanced capabilities</summary><label class="form-group"><span class="form-label">Appium capabilities (JSON)</span><textarea id="mobile-capabilities" class="form-input" rows="4" spellcheck="false" placeholder='{"appium:noReset": true}'></textarea><small>Only standard scalar Appium capabilities are accepted.</small></label></details>
         </div>
         <div class="mobile-action-row"><button id="mobile-run-doctor" class="secondary-btn">Check session</button><button id="mobile-connect" class="primary-btn">Connect device</button></div>
         <p id="mobile-config-message" class="panel-description" aria-live="polite">Enter a device name to begin.</p>
       </div>
 
+      <section class="panel-card mobile-readiness-board" aria-labelledby="mobile-readiness-title">
+        <div class="card-header"><div><h5 id="mobile-readiness-title">Device readiness</h5><small>Connection and runtime preflight</small></div><span id="mobile-readiness-state" class="mobile-state disconnected"><i></i>Disconnected</span></div>
+        <div class="mobile-readiness-preview"><span class="mobile-readiness-device">▯</span><div><strong id="mobile-readiness-device-name">Select a connected device</strong><small id="mobile-readiness-device-detail">The live device stream will appear here after connection.</small></div></div>
+        <div class="mobile-preflight-grid">
+          <article data-readiness-check="bridge"><i></i><span>Device bridge</span><strong id="mobile-ready-bridge">Checking…</strong><small>ADB / Xcode bridge</small></article>
+          <article data-readiness-check="appium"><i></i><span>Appium server</span><strong id="mobile-ready-appium">Checking…</strong><small id="mobile-ready-appium-url">127.0.0.1:4723/status</small></article>
+          <article data-readiness-check="app"><i></i><span>Application target</span><strong id="mobile-ready-app">Required</strong><small>Package or bundle ID</small></article>
+          <article data-readiness-check="display"><i></i><span>Display profile</span><strong id="mobile-ready-display">Awaiting device</strong><small id="mobile-ready-orientation">Resolution · Orientation</small></article>
+        </div>
+      </section>
+
       <div class="mobile-session-strip" aria-label="Mobile session status">
         <div><span>Context</span><select id="mobile-context" class="mobile-context-select" disabled><option>NATIVE_APP</option></select></div>
         <div><span>Screen</span><strong id="mobile-screen">—</strong></div>
         <div><span>Orientation</span><strong id="mobile-orientation">PORTRAIT</strong></div>
+        <div><span>Keyboard</span><strong id="mobile-keyboard-state">Hidden</strong></div>
       </div>
 
       <div class="mobile-device-controls" aria-label="Live device controls">
-        <button id="mobile-live-back" class="secondary-btn" disabled>Back</button>
-        <button id="mobile-live-keyboard" class="secondary-btn" disabled>Hide keyboard</button>
-        <button id="mobile-live-rotate" class="secondary-btn" disabled>Rotate</button>
+        <button id="mobile-live-home" class="mobile-tool-button" disabled title="Home"><span>⌂</span><small>Home</small></button>
+        <button id="mobile-live-back" class="mobile-tool-button" disabled title="Back"><span>←</span><small>Back</small></button>
+        <button id="mobile-live-recent" class="mobile-tool-button" disabled title="Recent apps"><span>▦</span><small>Recent</small></button>
+        <button id="mobile-live-volume-up" class="mobile-tool-button" disabled title="Volume up"><span>＋</span><small>Volume</small></button>
+        <button id="mobile-live-volume-down" class="mobile-tool-button" disabled title="Volume down"><span>−</span><small>Volume</small></button>
+        <button id="mobile-live-keyboard" class="mobile-tool-button" disabled title="Hide keyboard"><span>⌨</span><small>Keyboard</small></button>
+        <button id="mobile-live-rotate" class="mobile-tool-button" disabled title="Rotate device"><span>↻</span><small>Rotate</small></button>
+        <button id="mobile-live-screenshot" class="mobile-tool-button" disabled title="Take screenshot"><span>◎</span><small>Capture</small></button>
+        <button id="mobile-refresh-hierarchy" class="mobile-tool-button" disabled title="Refresh hierarchy"><span>⟳</span><small>Refresh</small></button>
       </div>
 
+      <section class="panel-card mobile-recording-studio" aria-labelledby="mobile-recording-title">
+        <div class="card-header"><div><h5 id="mobile-recording-title">Record on device</h5><small class="mobile-card-subtitle">Turn interactions on the device preview into resilient timeline steps.</small></div><span id="mobile-recording-health" class="mobile-recording-health idle"><i></i>Idle</span></div>
+        <div class="mobile-recording-bar" role="toolbar" aria-label="Mobile recording controls">
+          <button id="mobile-record-start" class="primary-btn" disabled><span class="record-dot"></span>Start recording</button>
+          <button id="mobile-record-pause" class="secondary-btn" disabled>Pause</button>
+          <button id="mobile-record-stop" class="secondary-btn" disabled>Stop</button>
+          <button id="mobile-record-replay" class="secondary-btn" disabled><span aria-hidden="true">▷</span> Replay</button>
+          <button id="mobile-record-save" class="secondary-btn" disabled><span aria-hidden="true">◇</span> Save recording</button>
+          <button id="mobile-record-export" class="secondary-btn" disabled>Export script</button>
+          <button id="mobile-record-assert" class="secondary-btn" disabled>Add assertion</button>
+          <div class="mobile-recording-clock"><span id="mobile-record-duration">00:00</span><small id="mobile-record-count">0 steps</small><small id="mobile-record-stream">Stream idle · 0 captured · 0 dropped</small></div>
+        </div>
+        <label class="preference-row mobile-replay-reset"><span><strong>Reset app state before replay</strong><small>Clear local app data before launching the configured activity.</small></span><input id="mobile-replay-reset-state" type="checkbox"></label>
+        <p id="mobile-recording-guidance" class="panel-description">Connect a device to begin. Expand the preview for accurate gesture capture.</p>
+        <div id="mobile-live-action-feed" class="mobile-live-action-feed" aria-live="polite"><div class="empty-state"><strong>No captured actions</strong><span>Recorded taps, long presses, swipes, and device keys will appear here.</span></div></div>
+      </section>
+
+      <details class="panel-card mobile-command-studio">
+        <summary class="card-header"><div><h5>Action studio</h5><small class="mobile-card-subtitle">Gestures, app lifecycle, and device state.</small></div><span class="badge">Phase 2</span></summary>
+        <div class="card-content">
+          <div class="mobile-command-grid">
+            <label class="form-group"><span class="form-label">Action</span><select id="mobile-command-type" class="form-select"><option value="swipe">Swipe</option><option value="scroll">Scroll</option><option value="longPress">Long press selected</option><option value="mobileKey">Press mobile key</option><option value="installApp">Install APK</option><option value="launchApp">Launch app</option><option value="terminateApp">Terminate app</option><option value="resetApp">Restart app</option><option value="clearAppData">Clear app data</option><option value="deepLink">Open deep link</option><option value="acceptAlert">Accept alert</option><option value="dismissAlert">Dismiss alert</option><option value="grantPermission">Grant permission</option><option value="revokePermission">Revoke permission</option></select></label>
+            <label class="form-group"><span class="form-label">Value</span><input id="mobile-command-value" class="form-input" placeholder="URL, permission, or app ID"></label>
+            <label class="form-group mobile-config-wide"><span class="form-label">Gesture coordinates</span><div class="mobile-coordinate-grid"><input id="mobile-start-x" class="form-input" inputmode="numeric" placeholder="Start X"><input id="mobile-start-y" class="form-input" inputmode="numeric" placeholder="Start Y"><input id="mobile-end-x" class="form-input" inputmode="numeric" placeholder="End X"><input id="mobile-end-y" class="form-input" inputmode="numeric" placeholder="End Y"></div></label>
+          </div>
+          <div class="mobile-command-actions"><button id="mobile-command-run" class="primary-btn">Run now</button><button id="mobile-command-add" class="secondary-btn">Add to recording</button></div>
+        </div>
+      </details>
+
       <div class="panel-card mobile-inspector-card">
-        <div class="card-header"><h5>Device inspector</h5><div class="mobile-inspector-actions"><button id="mobile-expand-preview" class="secondary-btn" aria-expanded="false">Expand view</button><button id="mobile-refresh-hierarchy" class="secondary-btn" disabled>Refresh hierarchy</button></div></div>
+        <div class="card-header"><h5>Device inspector</h5><div class="mobile-inspector-actions"><button id="mobile-open-scrcpy" class="secondary-btn" disabled title="Open native low-latency mirror">Live mirror</button><button id="mobile-expand-preview" class="secondary-btn" aria-expanded="false">Expand Device View</button></div></div>
         <div class="mobile-device-preview" id="mobile-device-preview">
           <div class="mobile-device-frame"><div class="mobile-device-speaker"></div><div class="mobile-device-empty"><span class="mobile-preview-icon">▯</span><strong>No device connected</strong><small>The live screenshot will appear here.</small></div></div>
         </div>
         <div class="mobile-inspector-tabs" role="tablist"><button class="active" data-mobile-tab="hierarchy">Hierarchy</button><button data-mobile-tab="locators">Locators</button></div>
+        <label class="mobile-hierarchy-search"><span>⌕</span><input id="mobile-hierarchy-search" type="search" placeholder="Filter by ID, text, or class" aria-label="Filter native hierarchy"></label>
         <div id="mobile-hierarchy-empty" class="mobile-hierarchy-empty"><span>Application hierarchy</span><small>Connect and refresh to inspect native elements.</small></div>
         <div id="mobile-locator-preview" class="mobile-locator-preview hidden"><p class="panel-description">Select an element from the live hierarchy to view ranked locators.</p></div>
       </div>
+      <div class="mobile-studio-splitter device" data-mobile-splitter="device" role="separator" aria-label="Resize device and hierarchy panels" aria-orientation="vertical"></div>
+      <div class="mobile-studio-splitter timeline" data-mobile-splitter="timeline" role="separator" aria-label="Resize hierarchy and timeline panels" aria-orientation="vertical"></div>
     </div>
   </template>
 
@@ -766,13 +878,14 @@
       <div class="panel-card appearance-settings">
         <div class="card-header"><h5>Appearance & accessibility</h5><span class="badge">UI</span></div>
         <div class="card-content">
+          <div class="form-group"><label class="form-label" for="ui-theme-select">Color theme</label><select id="ui-theme-select" class="form-select"><option value="dark">Dark</option><option value="light">Light</option><option value="system">System</option></select></div>
           <div class="form-group"><label class="form-label" for="ui-density-select">Interface density</label><select id="ui-density-select" class="form-select"><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></div>
           <label class="preference-row"><span><strong>Reduce motion</strong><small>Limit transitions and animated status indicators</small></span><input id="ui-reduce-motion" type="checkbox"></label>
           <label class="preference-row"><span><strong>Low-performance mode</strong><small>Disable blur, shadows, and costly visual effects</small></span><input id="ui-low-performance" type="checkbox"></label>
         </div>
       </div>
       <div class="panel-section"><h4 class="panel-heading">Plugin Manager</h4>
-        <p class="panel-description">Install sandboxed Chromation extensions. Review every requested permission before activation.</p></div>
+        <p class="panel-description">Install sandboxed OmniFlow QA extensions. Review every requested permission before activation.</p></div>
       <div class="panel-card"><div class="card-header"><h5>Installed plugins</h5><span id="plugin-count" class="badge">0</span></div>
         <div id="installed-plugin-list" class="card-content"><p class="hint">No plugins installed.</p></div></div>
       <details class="panel-card p1-authoring-card"><summary class="card-header"><h5>Install development bundle</h5></summary>
@@ -789,6 +902,9 @@
     </div>
   </template>
 
+  <script src="modules/runtime.js"></script>
+  <script src="modules/target-environment.js"></script>
+  <script src="modules/connected-device-picker.js"></script>
   <script src="report-workspace.js"></script>
   <script src="renderer.js"></script>
 </body>

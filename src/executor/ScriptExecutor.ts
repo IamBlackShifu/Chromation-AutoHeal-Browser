@@ -887,6 +887,7 @@ export class ScriptExecutor {
       retryPolicy: options?.retryPolicy ?? DEFAULT_RETRY_POLICY,
       evidence: options?.evidence ?? DEFAULT_EVIDENCE_POLICY,
       reuseBrowser: options?.reuseBrowser ?? false,
+      resetAppState: options?.resetAppState ?? false,
       initialPageState: options?.initialPageState ?? {},
     };
   }

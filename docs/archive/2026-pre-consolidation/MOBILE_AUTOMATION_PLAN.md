@@ -1,18 +1,22 @@
 # Mobile Application Automation Plan
 
-Last reviewed: 11 August 2026
+Last reviewed: 14 August 2026
 
 Current implementation and resume notes: [MOBILE_AUTOMATION_HANDOFF.md](MOBILE_AUTOMATION_HANDOFF.md).
 
 ## Implementation status
 
-The foundational contracts, Android Appium connection, screenshot/hierarchy
-inspection, ranked native locators, context-aware fingerprints, conservative
-healing, Electron IPC bridge, live actions, hybrid context switching, recorder-step
-capture, and expanded portrait inspector are implemented on
-`feature/mobile-automation`. Replay routing, Appium TypeScript export, richer
-gestures/lifecycle/evidence, setup diagnostics, profiles, and device E2E coverage
-remain pending. See the handoff for exact validation and the recommended next slice.
+Phase 0, Phase 1, and the Android Phase 2 usable-MVP code paths are implemented on `feature/mobile-automation`. This includes
+the shared contracts and schema migration, Android Appium session ownership,
+screenshot/hierarchy authoring, ranked locators, mobile recording persistence,
+automatic Android replay routing, conservative healing foundations, replay
+screenshots and diagnostic evidence, Appium TypeScript export, and a deterministic
+login workflow covering save, reopen, replay, report, and export. Phase 2 gestures,
+lifecycle breadth, setup diagnostics, profiles, recovery, and physical-device/CI
+coverage remain pending. Phase 2 adds gestures, lifecycle, alerts, permissions,
+uploads, setup diagnostics, profiles, advanced capabilities, preflight, retries,
+timeouts, reconnect handling, healing audits, logcat, and context/evidence capture.
+See the handoff and [ANDROID_COMPATIBILITY_MATRIX.md](ANDROID_COMPATIBILITY_MATRIX.md).
 
 ## Goal and approach
 
@@ -120,10 +124,18 @@ known. Never silently heal destructive actions such as purchase or delete.
 - Ship native smoke, login, hybrid checkout, deep-link, permission, and mobile-web
   templates.
 - Reference APK/IPA/build artifacts through a provider-neutral model.
+- Offer a managed local Appium mode that discovers an available port, reports
+  startup health and logs, and reliably stops only processes it owns.
+- Prefer a low-latency scrcpy stream for Android interaction, with MJPEG as a
+  compatible fallback and screenshot polling as the final fallback.
 
 ## Delivery plan
 
 ### Phase 0 - Reliability and contracts (P0, 1-2 weeks)
+
+Status: **Complete in automated local coverage.** Existing web recordings migrate,
+the automation contracts have web and Android contract tests, Electron IPC and UI
+surfaces have smoke coverage, and the complete repository check remains green.
 
 - Complete the local Electron happy-path fixture and smoke E2E test.
 - Inventory action semantics across schema, renderer, executor, reports, exporters.
@@ -133,6 +145,10 @@ known. Never silently heal destructive actions such as purchase or delete.
 Exit: web recordings migrate and all current checks remain green.
 
 ### Phase 1 - Android proof of concept (P0, 2 weeks)
+
+Status: **Complete in code and deterministic fixture coverage.** A real Appium
+installation remains necessary for the optional hardware smoke described in the
+handoff, but it is no longer a code-path blocker.
 
 - Add Appium connection/session lifecycle and an Android profile.
 - Connect a sample APK on one emulator.
@@ -144,6 +160,10 @@ Exit: a deterministic login records, saves, reopens, replays, and reports.
 
 ### Phase 2 - Android usable MVP (P0, 3-4 weeks)
 
+Status: **Complete in application code and deterministic fixture coverage.** The
+published compatibility matrix distinguishes this from environment certification;
+real-device/API-level runs remain an external validation gate.
+
 - Add gestures, orientation, lifecycle, deep links, alerts, permissions, keyboard,
   hybrid contexts, uploads, and logs.
 - Add setup doctor, profiles, preflight, cancellation, timeouts, disconnect
@@ -152,6 +172,85 @@ Exit: a deterministic login records, saves, reopens, replays, and reports.
 - Test an emulator and real device across nominated OS/API levels.
 
 Exit: the Android action matrix passes locally and in CI/device lab.
+
+### Phase 2.1 - Android infrastructure and handoff hardening (P0, 2-3 weeks)
+
+Status: **In progress.** The managed Appium lifecycle, collision-free Android port
+bundles, Electron ownership IPC, MJPEG/screenshot stream fallback contract,
+hierarchy refresh policy, safe app-data reset, dynamic WebView wait, mobile keys,
+and TypeScript/Java/Python export paths are implemented with deterministic coverage.
+Native scrcpy mirror/control lifecycle is implemented with MJPEG/screenshot fallback,
+and two managed sessions have deterministic collision coverage. An embedded scrcpy
+decoder and real two-device certification remain external/tooling-dependent work.
+This is a required hardening milestone before Phase 3. It
+extends the completed Phase 2 action surface without changing the canonical
+recording model or making streaming a prerequisite for automation.
+
+#### Appium infrastructure management
+
+- Add an `AppiumProcessManager` for opt-in local server ownership: executable and
+  driver validation, start, readiness polling, structured stdout/stderr capture,
+  graceful shutdown, forced-cleanup fallback, and orphan detection on restart.
+- Discover and reserve an available loopback port per managed server. Hold the
+  reservation until process spawn and verify readiness against that exact server
+  to avoid time-of-check/time-of-use collisions.
+- Allocate isolated Appium base paths and Android system ports (`systemPort`,
+  `chromedriverPort`, MJPEG/server ports where applicable) per device/session.
+- Keep remote or user-managed Appium endpoints supported. Never terminate a
+  process Chromation did not start, and surface ownership, PID, endpoint, logs,
+  and health in diagnostics.
+- Add bounded startup/restart policies and deterministic cleanup for normal exit,
+  cancellation, renderer failure, and application shutdown.
+
+#### Inspector and streaming performance
+
+- Add a transport-neutral `DeviceStream` contract with scrcpy as the preferred
+  Android implementation, Appium MJPEG as fallback, and current screenshot polling
+  as the no-extra-dependency fallback.
+- Decouple visual streaming from Appium hierarchy retrieval. Pull XML on stream
+  pause, explicit refresh, inspection hover after a short debounce, and after
+  state-changing actions; do not continuously request page source per frame.
+- Map pointer input through stream viewport, letterboxing, rotation, density, and
+  device dimensions before hit testing or dispatch.
+- Apply backpressure by dropping stale frames, keep only the newest pending frame,
+  and automatically degrade transports when startup, decoding, or health checks fail.
+- Show stream transport, latency, paused/live state, stale-hierarchy age, and
+  fallback reason without blocking recording or replay.
+
+#### Resilience and diagnostics
+
+- Add an explicit **Clear app data** reset option backed by
+  `adb -s <serial> shell pm clear <package>`. Validate serial and package, require
+  confirmation, distinguish it from cache-only reset language, then relaunch and
+  wait for the configured activity when requested.
+- Capture the clear result, command duration, relaunch state, and remediation in
+  diagnostics. Never run it against an implicit device when multiple targets exist.
+- Add bounded WebView discovery waits with context polling, actionable timeout
+  evidence, native-context fallback, and recovery when a WebView is recreated.
+- Support automatic Chromedriver compatibility through UiAutomator2 capabilities
+  and Appium-managed driver discovery/download where policy permits. Provide pinned
+  executable and mapping-file overrides for offline or controlled environments,
+  and record browser/driver versions in reports.
+- Add typed mobile key actions for Search, Go, Enter, and Home. Use W3C/Appium
+  commands where supported, Android keycodes as the platform fallback, and declare
+  unsupported combinations during preflight rather than during execution.
+
+#### Developer tooling and cross-team export
+
+- Retain Appium TypeScript export using W3C WebDriver semantics.
+- Add executable Appium Java and Python exporters using official client bindings,
+  including capabilities, session lifecycle, contexts, waits, gestures, key actions,
+  evidence hooks, and `finally` cleanup.
+- Centralize action-to-command mapping so TypeScript, Java, and Python exports share
+  locator priority, timeout, escaping, and fallback semantics.
+- Generate dependency/version manifests and concise run instructions with every
+  export. Reject or annotate actions that cannot be represented faithfully.
+
+Exit: two Android targets can replay concurrently through independently managed
+local Appium sessions without port collisions; the inspector sustains live control
+with hierarchy refreshes decoupled from frames; reset, dynamic WebView, and mobile
+key workflows pass deterministic tests; and the same fixture exports runnable,
+semantically equivalent TypeScript, Java, and Python tests.
 
 ### Phase 3 - iOS support (P1, 3-5 weeks)
 
@@ -214,6 +313,11 @@ tests/e2e/mobile/
 | Device outages look like app bugs | Infrastructure error class, health checks, provider diagnostics |
 | Evidence contains sensitive data | Extend redaction to screenshots, source, logs, clipboard, notifications |
 | Upgrades break drivers | Version pinning, compatibility matrix, scheduled contract suite |
+| Managed servers leak or collide | Explicit ownership, per-session port bundles, readiness checks, shutdown audit |
+| Live stream overloads Appium | Separate stream transport, hierarchy debounce, stale-frame dropping, fallback ladder |
+| `pm clear` destroys unintended data | Explicit serial/package validation, confirmation, audit evidence |
+| WebView/Chromedriver mismatch | Bounded context waits, version evidence, managed matching plus pinned offline override |
+| Export languages drift | Shared command model and cross-language golden/fixture tests |
 
 ## MVP acceptance criteria
 
@@ -226,6 +330,12 @@ tests/e2e/mobile/
 - Secrets and sensitive regions are absent from saved evidence.
 - Mobile contract/E2E tests and existing web checks pass in CI.
 - A tested action/device compatibility matrix is published.
+- Two local devices can run concurrently without Appium or Android auxiliary-port
+  collisions, and every managed process is accounted for after completion.
+- Live inspection remains usable when scrcpy is unavailable by falling back to
+  MJPEG and then screenshot polling without changing recorded steps.
+- TypeScript, Java, and Python exports preserve equivalent actions, locators,
+  waits, contexts, key commands, and cleanup behavior.
 
 ## First implementation slice
 

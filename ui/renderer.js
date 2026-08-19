@@ -1,5 +1,5 @@
 /**
- * Chromation AutoHeal Browser - Renderer Process
+ * OmniFlow QA - Renderer Process
  * Handles UI interactions and communication with main process
  */
 
@@ -20,6 +20,129 @@ let stepSearchQuery = '';
 let executionElapsedTimer = null;
 let runHistoryHydrated = false;
 let activeMobileSelection = null;
+let activeMobileInspection = null;
+let mobileInspectionCapturedAt = 0;
+let mobileRecordingState = 'idle';
+let mobileRecordingTimer = null;
+let mobileNativeTouchUnsubscribe = null;
+let suppressNativeTouchUntil = 0;
+let mobileHierarchyPollingTimer = null;
+let mobileNativeCaptureQueue = Promise.resolve();
+let mobileEmbeddedCaptureQueue = Promise.resolve();
+let mobileTouchCalibration = null;
+let mobileCaptureDiagnostics = { stream: 'idle', captured: 0, dropped: 0, pointerDown: 0, pointerUp: 0, lastDrop: '' };
+let mobilePointerSample = null;
+let mobileInspectionRefreshPromise = null;
+let mobileHoverFrame = null;
+let currentRecordingTarget = { platform: 'web', mode: 'web' };
+let activeAutomationWorkspace = null;
+const workspaceSessionStores = {
+  web: { actions: [], target: { platform: 'web', mode: 'web' } },
+  mobile: { actions: [], target: { platform: 'android', mode: 'native', automationName: 'UiAutomator2' } },
+};
+const workspaceSavedSignatures = { web: '[]', mobile: '[]' };
+
+function actionSignature(actions) { return JSON.stringify(normalizeRecordedActions(actions)); }
+
+function persistWorkspaceDrafts() {
+  if (activeAutomationWorkspace && recorder?.getActions) {
+    workspaceSessionStores[activeAutomationWorkspace] = {
+      actions: normalizeRecordedActions(recorder.getActions()), target: { ...currentRecordingTarget },
+    };
+  }
+  localStorage.setItem('omniflow-workspace-drafts', JSON.stringify(workspaceSessionStores));
+}
+
+function showWorkspaceLauncher() {
+  document.getElementById('workspace-launcher')?.classList.remove('hidden');
+  document.body.classList.add('workspace-unselected');
+  requestAnimationFrame(() => document.querySelector('[data-launch-workspace="web"]')?.focus());
+}
+
+async function teardownActiveWorkspace(workspace) {
+  if (!workspace) return;
+  if (workspace === 'web') {
+    if (isRecording) { recorder?.stopRecording(); isRecording = false; }
+    if (isInspecting) { inspector?.stopInspection(); isInspecting = false; }
+    try { browserWebview?.stop?.(); browserWebview?.loadURL?.('about:blank'); } catch (_) {}
+  } else {
+    if (mobileRecordingState !== 'idle') await stopMobileDeviceRecording();
+    clearInterval(mobileHierarchyPollingTimer); mobileHierarchyPollingTimer = null;
+    mobileNativeTouchUnsubscribe?.(); mobileNativeTouchUnsubscribe = null;
+    const result = await ipcRenderer.invoke('workspace-teardown', 'mobile');
+    if (!result?.success) throw new Error(result?.error || 'Mobile workspace cleanup failed');
+    activeMobileInspection = null; activeMobileSelection = null;
+  }
+}
+
+async function switchAutomationWorkspace(nextWorkspace, options = {}) {
+  if (!['web', 'mobile'].includes(nextWorkspace) || nextWorkspace === activeAutomationWorkspace) {
+    document.getElementById('workspace-launcher')?.classList.add('hidden');
+    return;
+  }
+  const previous = activeAutomationWorkspace;
+  if (previous) {
+    const outgoingActions = normalizeRecordedActions(await recorder.getActions());
+    if (!options.initial && !options.skipConfirmation && outgoingActions.length && actionSignature(outgoingActions) !== workspaceSavedSignatures[previous]) {
+      const confirmed = await requestConfirmation(`Your ${previous} workspace has unsaved steps. They will remain available as a recoverable draft.`, 'Switch workspaces?', 'Keep draft & switch');
+      if (!confirmed) return false;
+    }
+    await teardownActiveWorkspace(previous);
+    workspaceSessionStores[previous] = { actions: outgoingActions, target: { ...currentRecordingTarget } };
+    persistWorkspaceDrafts();
+  }
+  activeAutomationWorkspace = nextWorkspace;
+  const selected = workspaceSessionStores[nextWorkspace];
+  await recorder.setActions(selected.actions);
+  recordedActions = normalizeRecordedActions(await recorder.getActions());
+  currentRecordingTarget = { ...selected.target };
+  selectedStepIndex = null;
+  document.body.classList.remove('workspace-unselected', 'workspace-web', 'workspace-mobile');
+  document.body.classList.add(`workspace-${nextWorkspace}`);
+  document.getElementById('workspace-launcher')?.classList.add('hidden');
+  const switcher = document.getElementById('workspace-switcher'); if (switcher) switcher.value = nextWorkspace;
+  closePanel();
+  if (nextWorkspace === 'mobile') {
+    hideReportWorkspace(); homeWorkspace?.classList.add('hidden'); browserView?.classList.add('hidden');
+    showMobilePanel(); sidePanel.classList.add('open'); setActiveRailAction('mobile');
+    setTargetEnvironment('android', document.getElementById('mobile-device-name')?.value || 'Device');
+  } else {
+    setTargetEnvironment('web', 'Chrome'); showHomeWorkspace();
+    if (!options.initial) showToast('Web workspace ready. Mobile drivers were released.', 'success');
+  }
+  updateActionsDisplay(); updatePhase1Badges();
+  if (options.initial && selected.actions.length) showToast(`Recovered ${selected.actions.length} ${nextWorkspace} draft step${selected.actions.length === 1 ? '' : 's'}`, 'success');
+  if (!options.initial) showToast(`${nextWorkspace === 'mobile' ? 'Mobile' : 'Web'} Automation Studio is ready`, 'success');
+  return true;
+}
+
+function initializeWorkspaceLauncher() {
+  try {
+    const recovered = JSON.parse(localStorage.getItem('omniflow-workspace-drafts') || 'null');
+    for (const workspace of ['web', 'mobile']) {
+      if (Array.isArray(recovered?.[workspace]?.actions)) workspaceSessionStores[workspace] = {
+        actions: normalizeRecordedActions(recovered[workspace].actions), target: recovered[workspace].target || workspaceSessionStores[workspace].target,
+      };
+    }
+  } catch (_) {}
+  document.querySelectorAll('[data-launch-workspace]').forEach((card) => card.addEventListener('click', async () => {
+    const workspace = card.dataset.launchWorkspace;
+    if (document.getElementById('workspace-launch-default')?.checked) localStorage.setItem('omniflow-default-workspace', workspace);
+    await switchAutomationWorkspace(workspace, { initial: true });
+  }));
+  document.getElementById('workspace-switcher')?.addEventListener('change', async (event) => {
+    const requested = event.target.value;
+    event.target.disabled = true;
+    try { const switched = await switchAutomationWorkspace(requested); if (switched === false) event.target.value = activeAutomationWorkspace || 'web'; }
+    catch (error) { event.target.value = activeAutomationWorkspace || 'web'; showToast(`Workspace switch failed: ${error.message}`, 'error'); }
+    finally { event.target.disabled = false; }
+  });
+  const preferred = localStorage.getItem('omniflow-default-workspace');
+  if (preferred === 'web' || preferred === 'mobile') switchAutomationWorkspace(preferred, { initial: true });
+  else showWorkspaceLauncher();
+  setInterval(persistWorkspaceDrafts, 1200);
+  window.addEventListener('beforeunload', persistWorkspaceDrafts);
+}
 
 function normalizeRecordedActions(actions) {
   if (!Array.isArray(actions)) return [];
@@ -40,6 +163,10 @@ function normalizeRecordedActions(actions) {
     }));
 }
 
+function workspaceForRecordingTarget(target) {
+  return target?.platform === 'android' || target?.platform === 'ios' ? 'mobile' : 'web';
+}
+
 function escapeReportText(value) {
   return String(value ?? '').replace(/[&<>"']/g, (character) => ({
     '&': '&amp;',
@@ -48,6 +175,22 @@ function escapeReportText(value) {
     '"': '&quot;',
     "'": '&#39;',
   })[character]);
+}
+
+function showToast(message, type = 'info', timeoutMs = 4200) {
+  let container = document.getElementById('toast-container');
+  if (!container) {
+    container = document.createElement('div'); container.id = 'toast-container'; container.className = 'toast-container';
+    container.setAttribute('role', 'status'); container.setAttribute('aria-live', type === 'error' ? 'assertive' : 'polite');
+    document.body.appendChild(container);
+  }
+  const toast = document.createElement('div'); toast.className = `toast ${['success', 'warning', 'error'].includes(type) ? type : 'info'}`;
+  const dot = document.createElement('i'); const copy = document.createElement('span'); copy.textContent = String(message || '');
+  const close = document.createElement('button'); close.type = 'button'; close.textContent = '×'; close.setAttribute('aria-label', 'Dismiss notification');
+  toast.append(dot, copy, close); container.appendChild(toast);
+  const dismiss = () => { toast.classList.add('leaving'); setTimeout(() => toast.remove(), 180); };
+  close.addEventListener('click', dismiss); setTimeout(dismiss, Math.max(1200, timeoutMs));
+  return toast;
 }
 
 // DOM elements
@@ -131,9 +274,10 @@ async function initChromation() {
     pluginManager = chromationBrowser.plugins;
     
     statusText.textContent = 'Ready';
-    console.log('Chromation modules initialized');
+    console.log('OmniFlow QA modules initialized');
+    document.getElementById('brand-splash')?.classList.add('is-ready');
   } catch (error) {
-    console.error('Failed to initialize Chromation:', error);
+    console.error('Failed to initialize OmniFlow QA:', error);
     statusText.textContent = 'Initialization failed';
   }
 }
@@ -162,6 +306,7 @@ function navigateToUrl(url) {
   statusText.textContent = 'Loading...';
   browserWebview.src = url;
   urlInput.value = url;
+  syncClearUrlButton();
   
   // Record navigation if recording
   if (isRecording && recorder) {
@@ -232,6 +377,18 @@ btnRefresh.addEventListener('click', () => {
 btnHome.addEventListener('click', () => {
   showHomeWorkspace();
 });
+const clearUrlButton = document.getElementById('btn-clear-url');
+const syncClearUrlButton = () => clearUrlButton?.classList.toggle('hidden', !urlInput.value);
+urlInput.addEventListener('input', syncClearUrlButton);
+clearUrlButton?.addEventListener('click', () => { urlInput.value = ''; syncClearUrlButton(); urlInput.focus(); });
+
+function setTargetEnvironment(platform = 'web', name = 'Chrome') {
+  const badge = document.getElementById('target-environment');
+  if (!badge) return;
+  if (typeof badge.setTarget === 'function') { badge.setTarget(platform, name); return; }
+  badge.dataset.platform = platform;
+  badge.title = `Active target: ${platform === 'android' ? 'Android' : 'Web'} \u00B7 ${name}`;
+}
 
 // Close panel button
 btnClosePanel.addEventListener('click', () => {
@@ -240,6 +397,12 @@ btnClosePanel.addEventListener('click', () => {
 
 // Toggle tools
 function toggleTool(tool) {
+  if (activeAutomationWorkspace === 'mobile' && tool !== 'mobile') {
+    showToast('Switch to the Web workspace to use browser tools.', 'warning'); return;
+  }
+  if (activeAutomationWorkspace === 'web' && tool === 'mobile') {
+    showToast('Switch to the Mobile workspace to use device tools.', 'warning'); return;
+  }
   homeWorkspace?.classList.add('hidden');
   reportWorkspace?.classList.add('hidden');
   browserView?.classList.remove('hidden');
@@ -697,7 +860,7 @@ function generatePlaywrightPOM(className, url, elements) {
 
 /**
  * Page Object Model for ${url}
- * Generated by Chromation AutoHeal Browser
+ * Generated by OmniFlow QA
  */
 export class ${className} {
   readonly page: Page;
@@ -813,9 +976,13 @@ async function refreshP1AuthoringSummary() {
 }
 
 function showMobilePanel() {
+  activeMobileInspection = null;
+  activeMobileSelection = null;
   panelTitle.textContent = 'Mobile Automation';
   const template = document.getElementById('mobile-panel-template');
   panelContent.innerHTML = template.innerHTML;
+  const mobilePanel = panelContent.querySelector('.mobile-panel');
+  mobilePanel.classList.add('mobile-disconnected');
 
   const platform = document.getElementById('mobile-platform');
   const deviceName = document.getElementById('mobile-device-name');
@@ -825,46 +992,128 @@ function showMobilePanel() {
   const refresh = document.getElementById('mobile-refresh-hierarchy');
   const expandPreview = document.getElementById('mobile-expand-preview');
   const contextSelect = document.getElementById('mobile-context');
-  const deviceControls = ['mobile-live-back', 'mobile-live-keyboard', 'mobile-live-rotate'];
+  const profileSelect = document.getElementById('mobile-profile');
+  const devicePickerHost = document.getElementById('mobile-device-picker');
+  const deviceControls = ['mobile-live-home', 'mobile-live-back', 'mobile-live-recent', 'mobile-live-volume-up', 'mobile-live-volume-down',
+    'mobile-live-keyboard', 'mobile-live-rotate', 'mobile-live-screenshot'];
+  const deviceControlsBar = document.querySelector('.mobile-device-controls');
+  const inspectorHeader = document.querySelector('.mobile-inspector-card > .card-header');
+  if (deviceControlsBar && inspectorHeader) inspectorHeader.after(deviceControlsBar);
   let connected = false;
+  let managedAppiumId = null;
+  let scrcpyMirrorId = null;
+  let readinessTimer = null;
+  const setReadiness = (name, ready, readyText, failedText) => {
+    const card = document.querySelector(`[data-readiness-check="${name}"]`);
+    card?.classList.toggle('ready', Boolean(ready)); card?.classList.toggle('attention', !ready);
+    setText(`mobile-ready-${name}`, ready ? readyText : failedText);
+  };
+  const refreshWorkspaceReadiness = async () => {
+    const serverUrl = document.getElementById('mobile-server-url')?.value || 'http://127.0.0.1:4723';
+    setText('mobile-ready-appium-url', `${serverUrl.replace(/\/$/, '')}/status`);
+    const result = await ipcRenderer.invoke('mobile-workspace-readiness', { serverUrl, appId: document.getElementById('mobile-app-id')?.value });
+    setReadiness('bridge', result.checks?.bridge, 'Available', 'Not detected');
+    setReadiness('appium', result.checks?.appium, 'Healthy', 'Offline');
+    setReadiness('app', result.checks?.appId, 'Configured', 'Required');
+  };
+  const scheduleReadiness = () => { clearTimeout(readinessTimer); readinessTimer = setTimeout(() => refreshWorkspaceReadiness().catch(() => undefined), 250); };
+  const devicePicker = window.ChromationUI.mount('connected-device-picker', devicePickerHost, {
+    ipc: ipcRenderer,
+    escapeHTML: escapeReportText,
+    getCurrentSerial: () => document.getElementById('mobile-device-udid').value.trim(),
+  });
+  devicePickerHost.addEventListener('chromation-device-selected', (event) => {
+    const selected = event.detail.device;
+    deviceName.value = (selected.model || selected.device || selected.serial).replaceAll('_', ' ');
+    document.getElementById('mobile-device-udid').value = selected.serial;
+    message.textContent = `${deviceName.value} is ready to connect.`;
+    setText('mobile-readiness-device-name', deviceName.value);
+    setText('mobile-readiness-device-detail', `${selected.serial} · Ready to connect`);
+    scheduleReadiness();
+  });
 
   const setConnectionState = (isConnected, status = {}) => {
     connected = isConnected;
+    mobilePanel.classList.toggle('mobile-connected', isConnected);
+    mobilePanel.classList.toggle('mobile-disconnected', !isConnected);
+    mobilePanel.classList.remove('mobile-connecting');
     const state = document.getElementById('mobile-connection-state');
     state.className = `mobile-state ${isConnected ? 'ready' : 'disconnected'}`;
     state.innerHTML = `<i></i>${isConnected ? 'Connected' : 'Disconnected'}`;
+    const readinessState = document.getElementById('mobile-readiness-state');
+    if (readinessState) { readinessState.className = `mobile-state ${isConnected ? 'ready' : 'disconnected'}`; readinessState.innerHTML = `<i></i>${isConnected ? 'Ready' : 'Disconnected'}`; }
     connect.textContent = isConnected ? 'Disconnect' : 'Connect device';
     connect.classList.toggle('secondary-btn', isConnected);
     connect.classList.toggle('primary-btn', !isConnected);
     refresh.disabled = !isConnected;
+    document.getElementById('mobile-open-scrcpy').disabled = !isConnected;
     document.getElementById('rail-mobile-status').textContent = isConnected ? 'ON' : 'OFF';
     const contexts = status.contexts?.length ? status.contexts : [status.context || 'NATIVE_APP'];
     contextSelect.innerHTML = contexts.map((context) => `<option value="${escapeReportText(context)}">${escapeReportText(context)}</option>`).join('');
     contextSelect.value = status.context || contexts[0];
+    contextSelect.title = contextSelect.value;
     contextSelect.disabled = !isConnected || contexts.length < 2;
     deviceControls.forEach((id) => { document.getElementById(id).disabled = !isConnected; });
+    const recordStart = document.getElementById('mobile-record-start');
+    if (recordStart) recordStart.disabled = !isConnected || mobileRecordingState !== 'idle';
     document.getElementById('mobile-screen').textContent = status.screen || '—';
+    document.getElementById('mobile-screen').title = status.screen || 'Unknown screen';
     document.getElementById('mobile-orientation').textContent = status.orientation || 'PORTRAIT';
+    document.getElementById('mobile-keyboard-state').textContent = status.keyboardShown ? 'Shown' : 'Hidden';
+    setText('mobile-readiness-device-name', deviceName.value.trim() || status.deviceName || 'Select a connected device');
+    setText('mobile-readiness-device-detail', isConnected ? `${status.screen || 'Active application'} · Session connected` : 'The live device stream will appear here after connection.');
+    setText('mobile-ready-display', isConnected ? (status.resolution || 'Active') : 'Awaiting device');
+    setText('mobile-ready-orientation', isConnected ? `${status.resolution || 'Device resolution'} · ${status.orientation || 'PORTRAIT'}` : 'Resolution · Orientation');
+    setTargetEnvironment(isConnected ? 'android' : 'web', isConnected ? (deviceName.value.trim() || 'Android device') : 'Chrome');
   };
 
   platform?.addEventListener('change', () => {
+    const ios = platform.value === 'ios';
+    setText('mobile-app-id-label', ios ? 'iOS bundle identifier' : 'Android package name');
+    const activityField = document.getElementById('mobile-app-activity-field');
+    if (activityField) activityField.hidden = ios;
     message.textContent = platform.value === 'ios'
       ? 'iOS execution requires a configured macOS worker and XCUITest.'
       : 'Android execution uses the UiAutomator2 Appium driver.';
   });
+  ['mobile-server-url', 'mobile-app-id', 'mobile-app-activity'].forEach((id) => document.getElementById(id)?.addEventListener('input', scheduleReadiness));
+  initializeMobileRecordingControls();
+  // The drawer is rebuilt whenever the rail item is reopened. Restore the
+  // process-owned Appium session instead of presenting a false disconnected
+  // state and leaving recording disabled.
+  Promise.resolve(ipcRenderer.invoke('mobile-status')).then(async (result) => {
+    if (!result?.success || !result.status?.connected) return;
+    setConnectionState(true, result.status);
+    message.textContent = 'Restored the active mobile device session.';
+    await refreshMobileInspection();
+  }).catch((error) => {
+    message.textContent = `Could not restore the mobile session: ${error.message}`;
+  });
   doctor?.addEventListener('click', async () => {
-    const result = await ipcRenderer.invoke('mobile-status');
+    doctor.disabled = true;
+    doctor.textContent = 'Running doctorâ€¦';
+    const result = await ipcRenderer.invoke('mobile-doctor');
+    doctor.disabled = false;
+    doctor.textContent = 'Check setup';
     if (!result.success) return showToast(result.error, 'error');
-    setConnectionState(Boolean(result.status.connected), result.status);
-    message.textContent = result.status.connected
-      ? `Appium session ${result.status.sessionId} is healthy.`
-      : 'No active session. Verify Appium, UiAutomator2, adb, and the emulator before connecting.';
+    document.querySelector('.mobile-doctor-results')?.remove();
+    const card = document.createElement('div');
+    card.className = `mobile-doctor-results ${result.ready ? 'ready' : 'attention'}`;
+    card.innerHTML = `<div class="mobile-doctor-heading"><strong>${result.ready ? 'Ready for Android automation' : 'Setup needs attention'}</strong><span>${result.checks.filter((item) => item.status === 'passed').length}/${result.checks.length} checks passed</span></div>${result.checks.map((item) => `<details class="mobile-doctor-check ${item.status}"><summary><i></i><span>${escapeReportText(item.label)}</span><b>${item.status}</b></summary><code>${escapeReportText(item.detail)}</code>${item.status !== 'passed' ? `<p>${escapeReportText(item.remedy)}</p>` : ''}</details>`).join('')}`;
+    document.querySelector('.mobile-panel-hero')?.after(card);
+    message.textContent = result.ready ? 'Environment checks passed. Choose a profile and connect.' : 'Resolve the highlighted checks before connecting.';
   });
   connect?.addEventListener('click', async () => {
     if (connected) {
+      await ipcRenderer.invoke('mobile-touch-capture-stop');
       const result = await ipcRenderer.invoke('mobile-disconnect');
       if (!result.success) return showToast(result.error, 'error');
       setConnectionState(false);
+      if (managedAppiumId) {
+        await ipcRenderer.invoke('mobile-appium-stop', managedAppiumId);
+        managedAppiumId = null;
+      }
+      if (scrcpyMirrorId) { await ipcRenderer.invoke('mobile-scrcpy-stop', scrcpyMirrorId); scrcpyMirrorId = null; }
       renderDisconnectedMobilePreview();
       message.textContent = 'Device disconnected.';
       return;
@@ -874,9 +1123,21 @@ function showMobilePanel() {
       deviceName.focus();
       return;
     }
+    mobilePanel.classList.add('mobile-connecting');
     connect.disabled = true;
     connect.textContent = 'Connecting…';
     message.textContent = `Opening Appium session for ${deviceName.value.trim()}…`;
+    let capabilities = {};
+    try { capabilities = JSON.parse(document.getElementById('mobile-capabilities').value || '{}'); }
+    catch { mobilePanel.classList.remove('mobile-connecting'); connect.disabled = false; connect.textContent = 'Connect device'; return showToast('Advanced capabilities must be valid JSON', 'error'); }
+    if (document.getElementById('mobile-managed-appium').checked) {
+      message.textContent = 'Starting an isolated local Appium server…';
+      const managed = await ipcRenderer.invoke('mobile-appium-start', { startupTimeoutMs: 20000 });
+      if (!managed.success) { mobilePanel.classList.remove('mobile-connecting'); connect.disabled = false; connect.textContent = 'Connect device'; return showToast(managed.error, 'error'); }
+      managedAppiumId = managed.instance.id;
+      document.getElementById('mobile-server-url').value = managed.instance.endpoint;
+      capabilities = { ...capabilities, 'appium:systemPort': managed.instance.ports.systemPort, 'appium:chromedriverPort': managed.instance.ports.chromedriverPort, 'appium:mjpegServerPort': managed.instance.ports.mjpegServerPort };
+    }
     const result = await ipcRenderer.invoke('mobile-connect', {
       platform: platform.value,
       mode: document.getElementById('mobile-mode').value,
@@ -884,27 +1145,132 @@ function showMobilePanel() {
       deviceName: deviceName.value.trim(),
       udid: document.getElementById('mobile-device-udid').value.trim(),
       appId: document.getElementById('mobile-app-id').value.trim(),
+      appActivity: document.getElementById('mobile-app-activity').value.trim(),
+      capabilities,
     });
     connect.disabled = false;
     if (!result.success) {
+      if (managedAppiumId) { await ipcRenderer.invoke('mobile-appium-stop', managedAppiumId); managedAppiumId = null; }
       setConnectionState(false);
       message.textContent = result.error;
       return showToast(`Mobile connection failed: ${result.error}`, 'error');
     }
     setConnectionState(true, result.sessionInfo);
+    currentRecordingTarget = {
+      platform: 'android', mode: document.getElementById('mobile-mode').value,
+      name: deviceName.value.trim(), appId: document.getElementById('mobile-app-id').value.trim() || undefined,
+      appActivity: document.getElementById('mobile-app-activity').value.trim() || undefined,
+    };
     message.textContent = `Connected to Appium session ${result.sessionInfo.sessionId}.`;
     showToast('Mobile device connected', 'success');
     await refreshMobileInspection();
   });
   refresh?.addEventListener('click', refreshMobileInspection);
   expandPreview?.addEventListener('click', toggleExpandedMobileInspector);
+  document.getElementById('mobile-open-scrcpy')?.addEventListener('click', async () => {
+    if (scrcpyMirrorId) {
+      await ipcRenderer.invoke('mobile-scrcpy-stop', scrcpyMirrorId);
+      scrcpyMirrorId = null;
+      document.getElementById('mobile-open-scrcpy').textContent = 'Live mirror';
+      return;
+    }
+    const serial = document.getElementById('mobile-device-udid').value.trim();
+    if (!serial) return showToast('Enter an explicit device serial to open the low-latency mirror', 'warning');
+    const result = await ipcRenderer.invoke('mobile-scrcpy-start', { serial, title: `OmniFlow QA · ${deviceName.value.trim() || serial}` });
+    if (!result.success) return showToast(`${result.error}. Embedded inspection remains available.`, 'warning');
+    scrcpyMirrorId = result.mirror.id;
+    document.getElementById('mobile-open-scrcpy').textContent = 'Close mirror';
+    showToast('Native low-latency mirror opened', 'success');
+  });
   contextSelect?.addEventListener('change', () => runMobileDeviceAction('switchContext', contextSelect.value));
+  document.getElementById('mobile-live-home')?.addEventListener('click', () => runMobileDeviceAction('mobileKey', 'home'));
   document.getElementById('mobile-live-back')?.addEventListener('click', () => runMobileDeviceAction('back'));
+  document.getElementById('mobile-live-recent')?.addEventListener('click', () => runMobileDeviceAction('mobileKey', 'recent'));
+  document.getElementById('mobile-live-volume-up')?.addEventListener('click', () => runMobileDeviceAction('mobileKey', 'volume_up'));
+  document.getElementById('mobile-live-volume-down')?.addEventListener('click', () => runMobileDeviceAction('mobileKey', 'volume_down'));
   document.getElementById('mobile-live-keyboard')?.addEventListener('click', () => runMobileDeviceAction('hideKeyboard'));
   document.getElementById('mobile-live-rotate')?.addEventListener('click', () => {
     const current = document.getElementById('mobile-orientation').textContent;
     runMobileDeviceAction('rotate', current === 'LANDSCAPE' ? 'PORTRAIT' : 'LANDSCAPE');
   });
+  document.getElementById('mobile-live-screenshot')?.addEventListener('click', async () => {
+    if (!activeMobileInspection?.screenshotBase64) await refreshMobileInspection();
+    if (!activeMobileInspection?.screenshotBase64) return showToast('A device screenshot is not available yet', 'warning');
+    const link = document.createElement('a'); link.href = `data:image/png;base64,${activeMobileInspection.screenshotBase64}`;
+    link.download = `mobile_device_${Date.now()}.png`; link.click(); showToast('Device screenshot saved', 'success');
+  });
+  document.getElementById('mobile-hierarchy-search')?.addEventListener('input', (event) => {
+    const query = event.target.value.trim().toLowerCase();
+    document.querySelectorAll('.mobile-hierarchy-node').forEach((node) => node.classList.toggle('hidden', Boolean(query) && !node.textContent.toLowerCase().includes(query)));
+  });
+  const loadProfiles = async () => {
+    const result = await ipcRenderer.invoke('mobile-load-profiles');
+    if (!result.success) return;
+    profileSelect.innerHTML = '<option value="">Custom configuration</option>' + result.profiles.map((profile) => `<option value="${escapeReportText(profile.id)}">${escapeReportText(profile.name)}</option>`).join('');
+    profileSelect._profiles = result.profiles;
+  };
+  profileSelect?.addEventListener('change', () => {
+    const profile = profileSelect._profiles?.find((item) => item.id === profileSelect.value);
+    if (!profile) return;
+    document.getElementById('mobile-platform').value = profile.platform;
+    document.getElementById('mobile-mode').value = profile.mode;
+    document.getElementById('mobile-server-url').value = profile.serverUrl;
+    document.getElementById('mobile-device-name').value = profile.deviceName;
+    document.getElementById('mobile-device-udid').value = profile.udid || '';
+    devicePicker.setValue(profile.udid || '');
+    document.getElementById('mobile-app-id').value = profile.appId || '';
+    document.getElementById('mobile-app-activity').value = profile.appActivity || '';
+    document.getElementById('mobile-capabilities').value = JSON.stringify(profile.capabilities || {}, null, 2);
+  });
+  document.getElementById('mobile-save-profile')?.addEventListener('click', async () => {
+    let capabilities;
+    try { capabilities = JSON.parse(document.getElementById('mobile-capabilities').value || '{}'); }
+    catch { return showToast('Advanced capabilities must be valid JSON', 'error'); }
+    const name = await requestRecordingName(deviceName.value.trim() || 'Android profile');
+    if (!name) return;
+    const result = await ipcRenderer.invoke('mobile-save-profile', { id: (profileSelect.value || name.toLowerCase().replace(/[^a-z0-9]+/g, '-')).slice(0, 64), name, platform: 'android', mode: document.getElementById('mobile-mode').value, serverUrl: document.getElementById('mobile-server-url').value, deviceName: deviceName.value.trim(), udid: document.getElementById('mobile-device-udid').value.trim() || undefined, appId: document.getElementById('mobile-app-id').value.trim() || undefined, appActivity: document.getElementById('mobile-app-activity').value.trim() || undefined, capabilities });
+    if (!result.success) return showToast(result.error, 'error');
+    await loadProfiles(); profileSelect.value = result.profile.id; showToast('Mobile profile saved', 'success');
+  });
+  document.getElementById('mobile-delete-profile')?.addEventListener('click', async () => {
+    if (!profileSelect.value) return showToast('Choose a saved profile first', 'warning');
+    const result = await ipcRenderer.invoke('mobile-delete-profile', profileSelect.value);
+    if (!result.success) return showToast(result.error, 'error');
+    await loadProfiles(); showToast('Mobile profile deleted', 'success');
+  });
+  const buildCommandAction = () => {
+    const type = document.getElementById('mobile-command-type').value;
+    const coordinates = ['mobile-start-x', 'mobile-start-y', 'mobile-end-x', 'mobile-end-y'].map((id) => Number(document.getElementById(id).value));
+    const selector = type === 'longPress' ? (activeMobileSelection?.locator ? `${activeMobileSelection.locator.strategy}=${activeMobileSelection.locator.value}` : '') : 'device';
+    return { type, selector, value: document.getElementById('mobile-command-value').value || undefined, timestamp: Date.now(), metadata: { startX: coordinates[0], startY: coordinates[1], endX: coordinates[2], endY: coordinates[3], package: document.getElementById('mobile-app-id').value || undefined, serial: document.getElementById('mobile-device-udid').value || undefined } };
+  };
+  document.getElementById('mobile-command-run')?.addEventListener('click', async () => {
+    const action = buildCommandAction();
+    if (action.type === 'longPress' && !action.selector) return showToast('Select an element in the inspector first', 'warning');
+    if (action.type === 'clearAppData') {
+      if (!action.metadata.serial) return showToast('An explicit device serial is required to clear app data', 'warning');
+      if (!await requestConfirmation(`Clear all data for ${action.value || document.getElementById('mobile-app-id').value} on ${action.metadata.serial}? This cannot be undone.`, 'Clear app data?', 'Clear data')) return;
+      action.metadata.confirmed = true;
+      action.metadata.relaunch = true;
+    }
+    const result = await ipcRenderer.invoke('mobile-action', { action });
+    if (!result.success) return showToast(result.error, 'error');
+    renderMobileInspection(result.inspection); setConnectionState(true, result.status); showToast(`${action.type} completed`, 'success');
+  });
+  document.getElementById('mobile-command-add')?.addEventListener('click', async () => { await addRecordedMobileAction(buildCommandAction()); });
+  document.querySelectorAll('[data-mobile-splitter]').forEach((splitter) => splitter.addEventListener('pointerdown', (event) => {
+    event.preventDefault(); splitter.setPointerCapture?.(event.pointerId); document.body.classList.add('resizing-mobile-studio');
+    const move = (pointer) => {
+      const bounds = mobilePanel.getBoundingClientRect();
+      if (splitter.dataset.mobileSplitter === 'device') mobilePanel.style.setProperty('--device-pane', `${Math.max(320, Math.min(540, pointer.clientX - bounds.left))}px`);
+      else mobilePanel.style.setProperty('--timeline-pane', `${Math.max(340, Math.min(520, bounds.right - pointer.clientX))}px`);
+    };
+    const stop = () => { document.body.classList.remove('resizing-mobile-studio'); splitter.removeEventListener('pointermove', move); splitter.removeEventListener('pointerup', stop); };
+    splitter.addEventListener('pointermove', move); splitter.addEventListener('pointerup', stop);
+  }));
+  loadProfiles().catch(() => undefined);
+  devicePicker.refresh().catch(() => undefined);
+  refreshWorkspaceReadiness().catch(() => undefined);
   document.querySelectorAll('[data-mobile-tab]').forEach((button) => button.addEventListener('click', () => {
     document.querySelectorAll('[data-mobile-tab]').forEach((tab) => tab.classList.toggle('active', tab === button));
     document.getElementById('mobile-hierarchy-empty')?.classList.toggle('hidden', button.dataset.mobileTab !== 'hierarchy');
@@ -917,21 +1283,30 @@ function showMobilePanel() {
 
 function toggleExpandedMobileInspector() {
   const card = document.querySelector('.mobile-inspector-card');
+  const panel = document.querySelector('.mobile-panel');
   const button = document.getElementById('mobile-expand-preview');
-  if (!card || !button) return;
-  const expanded = card.classList.toggle('expanded');
+  if (!card || !panel || !button) return;
+  const expanded = panel.classList.toggle('focus-mode');
+  card.classList.toggle('expanded', expanded);
   document.body.classList.toggle('mobile-inspector-open', expanded);
-  button.textContent = expanded ? 'Restore view' : 'Expand view';
+  button.textContent = expanded ? 'Restore Studio' : 'Expand Device View';
   button.setAttribute('aria-expanded', String(expanded));
 }
 
 document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && document.querySelector('.mobile-inspector-card.expanded')) {
+  if (event.key === 'Escape' && document.querySelector('.mobile-panel.focus-mode')) {
     toggleExpandedMobileInspector();
   }
 });
 
 async function refreshMobileInspection() {
+  if (mobileInspectionRefreshPromise) return mobileInspectionRefreshPromise;
+  mobileInspectionRefreshPromise = performMobileInspectionRefresh();
+  try { return await mobileInspectionRefreshPromise; }
+  finally { mobileInspectionRefreshPromise = null; }
+}
+
+async function performMobileInspectionRefresh() {
   const refresh = document.getElementById('mobile-refresh-hierarchy');
   const message = document.getElementById('mobile-config-message');
   refresh.disabled = true;
@@ -943,6 +1318,10 @@ async function refreshMobileInspection() {
     message.textContent = result.error;
     return showToast(`Inspection failed: ${result.error}`, 'error');
   }
+  if (mobilePointerSample) {
+    message.textContent = 'Hierarchy refresh deferred until the active gesture finishes.';
+    return result.inspection;
+  }
   renderMobileInspection(result.inspection);
   const contextSelect = document.getElementById('mobile-context');
   if (result.status.contexts?.length) {
@@ -952,7 +1331,9 @@ async function refreshMobileInspection() {
   contextSelect.disabled = (result.status.contexts?.length || 0) < 2;
   document.getElementById('mobile-screen').textContent = result.status.screen || '—';
   document.getElementById('mobile-orientation').textContent = result.status.orientation || 'PORTRAIT';
+  document.getElementById('mobile-keyboard-state').textContent = result.status.keyboardShown ? 'Shown' : 'Hidden';
   message.textContent = `${result.inspection.hierarchy.nodeCount} elements inspected.`;
+  return result.inspection;
 }
 
 function renderDisconnectedMobilePreview() {
@@ -963,49 +1344,624 @@ function renderDisconnectedMobilePreview() {
 }
 
 function renderMobileInspection(inspection) {
+  activeMobileInspection = inspection;
+  mobileInspectionCapturedAt = Date.now();
+  activeMobileSelection = null;
   const preview = document.getElementById('mobile-device-preview');
-  preview.innerHTML = `<div class="mobile-device-frame"><div class="mobile-device-speaker"></div><img class="mobile-device-screenshot" src="data:image/png;base64,${inspection.screenshotBase64}" alt="Connected mobile device screenshot"></div>`;
+  preview.innerHTML = `<div class="mobile-device-frame"><div class="mobile-device-speaker"></div><div class="mobile-screenshot-surface"><img class="mobile-device-screenshot" src="data:image/png;base64,${inspection.screenshotBase64}" alt="Connected mobile device screenshot"><div class="mobile-element-highlight" aria-hidden="true"></div><div class="mobile-hover-tooltip hidden"></div></div></div>`;
   let elementIndex = 0;
   const renderNode = (node, depth = 0) => {
     const index = elementIndex++;
     if (inspection.elements[index]) inspection.elements[index].nodePath = node.path;
     const label = node.attributes['content-desc'] || node.attributes.text || node.attributes['resource-id'] || node.type;
-    return `<button class="mobile-hierarchy-node" data-mobile-element-index="${index}" style="--tree-depth:${depth}"><span>${escapeReportText(node.type.split('.').at(-1))}</span><small>${escapeReportText(label)}</small></button>${node.children.map((child) => renderNode(child, depth + 1)).join('')}`;
+    return `<button class="mobile-hierarchy-node${node.children.length ? ' has-children' : ''}" data-mobile-element-index="${index}" data-tree-depth="${depth}" aria-expanded="true" title="${node.children.length ? 'Double-click to collapse or expand subtree' : 'Select element'}" style="--tree-depth:${depth}"><span>${escapeReportText(node.type.split('.').at(-1))}</span><small>${escapeReportText(label)}</small></button>${node.children.map((child) => renderNode(child, depth + 1)).join('')}`;
   };
   const hierarchy = document.getElementById('mobile-hierarchy-empty');
   hierarchy.className = 'mobile-hierarchy-tree';
   hierarchy.innerHTML = inspection.hierarchy.roots.map((node) => renderNode(node)).join('');
   hierarchy.querySelectorAll('[data-mobile-element-index]').forEach((button) => button.addEventListener('click', () => {
-    hierarchy.querySelectorAll('.mobile-hierarchy-node').forEach((node) => node.classList.toggle('selected', node === button));
-    renderMobileLocators(inspection.elements[Number(button.dataset.mobileElementIndex)]);
+    selectMobileElement(inspection.elements[Number(button.dataset.mobileElementIndex)], Number(button.dataset.mobileElementIndex));
   }));
+  hierarchy.querySelectorAll('.mobile-hierarchy-node.has-children').forEach((button) => button.addEventListener('dblclick', () => {
+    const depth = Number(button.dataset.treeDepth); const collapse = button.getAttribute('aria-expanded') !== 'false';
+    button.setAttribute('aria-expanded', String(!collapse)); button.classList.toggle('collapsed', collapse);
+    let sibling = button.nextElementSibling;
+    while (sibling?.classList.contains('mobile-hierarchy-node') && Number(sibling.dataset.treeDepth) > depth) {
+      sibling.classList.toggle('subtree-hidden', collapse); sibling = sibling.nextElementSibling;
+    }
+  }));
+  const screenshot = preview.querySelector('.mobile-device-screenshot');
+  screenshot.addEventListener('load', () => {
+    screenshot.closest('.mobile-device-frame')?.classList.toggle('landscape', screenshot.naturalWidth > screenshot.naturalHeight);
+    setText('mobile-ready-display', `${screenshot.naturalWidth} × ${screenshot.naturalHeight}`);
+    setText('mobile-ready-orientation', `${screenshot.naturalWidth} × ${screenshot.naturalHeight} · ${screenshot.naturalWidth > screenshot.naturalHeight ? 'LANDSCAPE' : 'PORTRAIT'}`);
+  });
+  screenshot.addEventListener('click', handleMobileScreenshotPointer);
+  screenshot.addEventListener('pointerdown', beginMobileRecordingPointer);
+  screenshot.addEventListener('pointerup', finishMobileRecordingPointer);
+  screenshot.addEventListener('pointercancel', cancelMobileRecordingPointer);
+  screenshot.addEventListener('pointermove', previewMobileRecordingTarget);
+  screenshot.addEventListener('pointerleave', clearMobileRecordingTargetPreview);
+}
+
+function previewMobileRecordingTarget(event) {
+  if (!activeMobileInspection || mobileHoverFrame) return;
+  const snapshot = { clientX: event.clientX, clientY: event.clientY, currentTarget: event.currentTarget };
+  mobileHoverFrame = requestAnimationFrame(() => {
+    mobileHoverFrame = null;
+    const point = mapMobileScreenshotPointer(snapshot, snapshot.currentTarget); if (!point) return;
+    const match = resolveMobileElementAtPoint(activeMobileInspection.elements, point); if (!match) return clearMobileRecordingTargetPreview();
+    highlightMobileElement(match.element);
+    const tooltip = document.querySelector('.mobile-hover-tooltip'); if (!tooltip) return;
+    const locator = stableMobileLocators(match.element.locators)[0];
+    tooltip.innerHTML = `<strong>${escapeReportText(match.element.label || match.element.text || match.element.elementType.split('.').at(-1))}</strong><code>${escapeReportText(locator ? `${locator.strategy}=${locator.value}` : `coordinates=${Math.round(point.x)},${Math.round(point.y)}`)}</code><span>${locator ? `${Math.round(locator.score * 100)}% stable` : 'Coordinate fallback'}</span>`;
+    tooltip.classList.remove('hidden');
+  });
+}
+
+function clearMobileRecordingTargetPreview() {
+  document.querySelector('.mobile-hover-tooltip')?.classList.add('hidden');
+  if (!activeMobileSelection) document.querySelector('.mobile-element-highlight')?.classList.remove('visible');
+}
+
+function initializeMobileRecordingControls() {
+  const start = document.getElementById('mobile-record-start');
+  const pause = document.getElementById('mobile-record-pause');
+  const stop = document.getElementById('mobile-record-stop');
+  const replay = document.getElementById('mobile-record-replay');
+  const save = document.getElementById('mobile-record-save');
+  const exportButton = document.getElementById('mobile-record-export');
+  const assertion = document.getElementById('mobile-record-assert');
+  start?.addEventListener('click', startMobileDeviceRecording);
+  pause?.addEventListener('click', toggleMobileDeviceRecordingPause);
+  stop?.addEventListener('click', stopMobileDeviceRecording);
+  replay?.addEventListener('click', () => replayMobileRecordingFromStudio(replay));
+  save?.addEventListener('click', saveRecording);
+  exportButton?.addEventListener('click', () => exportScript('appium-typescript'));
+  assertion?.addEventListener('click', addMobileRecordingAssertion);
+  Promise.resolve(chromationBrowser.mobileRecording.getActions()).then(renderMobileRecordingFeed);
+  updateMobileRecordingControls();
+}
+
+async function startMobileDeviceRecording() {
+  const start = document.getElementById('mobile-record-start');
+  const guidance = document.getElementById('mobile-recording-guidance');
+  if (start) { start.disabled = true; start.classList.add('is-loading'); }
+  if (guidance) guidance.textContent = 'Preparing the live device hierarchy…';
+  const platform = document.getElementById('mobile-platform')?.value || 'android';
+  let appId = document.getElementById('mobile-app-id')?.value.trim() || '';
+  let appActivity = document.getElementById('mobile-app-activity')?.value.trim() || '';
+  try {
+    if (!appId || platform === 'android' && !appActivity) {
+      const target = await requestMobileTargetIdentification(platform, appId, appActivity);
+      if (!target) throw new Error('Recording cancelled because the application target is incomplete');
+      appId = target.appId; appActivity = target.appActivity;
+      document.getElementById('mobile-app-id').value = appId;
+      document.getElementById('mobile-app-activity').value = appActivity;
+      document.getElementById('mobile-app-id').dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    if (!appId) throw new Error(`${platform === 'ios' ? 'Bundle identifier' : 'Android package name'} is required before recording`);
+    if (platform === 'android' && !appActivity) throw new Error('Android main activity is required before recording');
+    if (platform === 'android' && !/^[A-Za-z][\w]*(?:\.[A-Za-z][\w]*)+$/.test(appId)) throw new Error('Android package name must use reverse-domain format, for example com.example.app');
+    if (platform === 'android' && !/^\.?[A-Za-z][\w]*(?:\.[A-Za-z][\w]*)*$/.test(appActivity)) throw new Error('Android main activity is invalid, for example .MainActivity');
+    const readiness = await ipcRenderer.invoke('mobile-workspace-readiness', {
+      serverUrl: document.getElementById('mobile-server-url')?.value,
+      appId,
+    });
+    if (!readiness?.success || !readiness.checks?.bridge || !readiness.checks?.appium || !readiness.checks?.appId) {
+      const failed = [!readiness?.checks?.bridge && 'ADB/device bridge', !readiness?.checks?.appium && 'Appium server', !readiness?.checks?.appId && 'application target'].filter(Boolean).join(', ');
+      throw new Error(`Recording preflight failed: ${failed || readiness?.error || 'environment is not ready'}`);
+    }
+    const statusResult = await ipcRenderer.invoke('mobile-status');
+    if (!statusResult?.success || !statusResult.status?.connected) {
+      throw new Error(statusResult?.error || 'Connect a device before starting mobile recording');
+    }
+    if (!activeMobileInspection) {
+      await refreshMobileInspection();
+      if (!activeMobileInspection) throw new Error('The device hierarchy could not be captured. Refresh the hierarchy and try again.');
+    }
+    const serial = document.getElementById('mobile-device-udid')?.value.trim();
+    if (serial) {
+      const nativeCapture = await ipcRenderer.invoke('mobile-touch-capture-start', { serial });
+      if (!nativeCapture.success) throw new Error(`Physical touch capture unavailable: ${nativeCapture.error}`);
+      mobileTouchCalibration = nativeCapture.calibration;
+      mobileCaptureDiagnostics = { stream: 'healthy', captured: 0, dropped: 0, pointerDown: 0, pointerUp: 0, lastDrop: '' };
+    }
+    const launchAction = await chromationBrowser.mobileRecording.start(appId);
+    mobileRecordingState = 'recording';
+    await beginIsolatedMobileRecording(launchAction, { appId, appActivity });
+    renderMobileRecordingFeed(await chromationBrowser.mobileRecording.getActions());
+    updateMobileRecordingControls();
+    mobileRecordingTimer = setInterval(updateMobileRecordingClock, 500);
+    clearInterval(mobileHierarchyPollingTimer);
+    mobileHierarchyPollingTimer = setInterval(() => {
+      if (mobileRecordingState === 'recording' && !mobileInspectionRefreshPromise) refreshMobileInspection().catch(() => undefined);
+    }, 1000);
+    document.getElementById('mobile-recording-guidance').textContent = 'Recording is live. Interact on the physical device or the embedded preview.';
+    showToast('Mobile recording started', 'success');
+  } catch (error) {
+    await ipcRenderer.invoke('mobile-touch-capture-stop').catch(() => undefined);
+    if (mobileRecordingState !== 'idle') await chromationBrowser.mobileRecording.stop();
+    mobileRecordingState = 'idle';
+    clearInterval(mobileRecordingTimer); mobileRecordingTimer = null;
+    clearInterval(mobileHierarchyPollingTimer); mobileHierarchyPollingTimer = null;
+    if (guidance) guidance.textContent = error.message;
+    showToast(`Recording could not start: ${error.message}`, 'error');
+  } finally {
+    start?.classList.remove('is-loading');
+    updateMobileRecordingControls();
+  }
+}
+
+function requestMobileTargetIdentification(platform, currentAppId = '', currentActivity = '') {
+  const dialog = document.getElementById('mobile-target-dialog'); const form = document.getElementById('mobile-target-form');
+  const appId = document.getElementById('mobile-target-package'); const activity = document.getElementById('mobile-target-activity');
+  const activityField = document.getElementById('mobile-target-activity-field'); const error = document.getElementById('mobile-target-error');
+  const cancel = document.getElementById('mobile-target-cancel');
+  if (!dialog || !form || !appId || !activity) return Promise.resolve(null);
+  const ios = platform === 'ios'; setText('mobile-target-title', ios ? 'Identify the iOS application' : 'Identify the Android application');
+  appId.previousElementSibling.textContent = ios ? 'Bundle identifier' : 'Package name'; activityField.hidden = ios;
+  appId.value = currentAppId; activity.value = currentActivity; error.textContent = '';
+  dialog.classList.remove('hidden'); requestAnimationFrame(() => (appId.value ? activity : appId).focus());
+  return new Promise((resolve) => {
+    const finish = (value) => { dialog.classList.add('hidden'); form.removeEventListener('submit', submit); cancel.removeEventListener('click', cancelInput); resolve(value); };
+    const submit = (event) => {
+      event.preventDefault(); const targetAppId = appId.value.trim(); const targetActivity = activity.value.trim();
+      if (!targetAppId) { error.textContent = ios ? 'Bundle identifier is required.' : 'Package name is required.'; appId.focus(); return; }
+      if (!ios && !targetActivity) { error.textContent = 'Main activity is required.'; activity.focus(); return; }
+      if (!ios && !/^[A-Za-z][\w]*(?:\.[A-Za-z][\w]*)+$/.test(targetAppId)) { error.textContent = 'Use reverse-domain format, for example com.example.app.'; appId.focus(); return; }
+      if (!ios && !/^\.?[A-Za-z][\w]*(?:\.[A-Za-z][\w]*)*$/.test(targetActivity)) { error.textContent = 'Use an activity such as .MainActivity.'; activity.focus(); return; }
+      finish({ appId: targetAppId, appActivity: ios ? '' : targetActivity });
+    };
+    const cancelInput = () => finish(null); form.addEventListener('submit', submit); cancel.addEventListener('click', cancelInput);
+  });
+}
+
+async function toggleMobileDeviceRecordingPause() {
+  if (mobileRecordingState === 'recording') {
+    await chromationBrowser.mobileRecording.pause(); mobileRecordingState = 'paused';
+  } else if (mobileRecordingState === 'paused') {
+    await refreshMobileInspection();
+    await chromationBrowser.mobileRecording.resume(); mobileRecordingState = 'recording';
+  }
+  updateMobileRecordingControls();
+}
+
+async function stopMobileDeviceRecording() {
+  await ipcRenderer.invoke('mobile-touch-capture-stop');
+  clearInterval(mobileHierarchyPollingTimer); mobileHierarchyPollingTimer = null;
+  const actions = await chromationBrowser.mobileRecording.stop();
+  mobileRecordingState = 'idle';
+  mobileCaptureDiagnostics.stream = 'idle';
+  clearInterval(mobileRecordingTimer); mobileRecordingTimer = null; mobilePointerSample = null;
+  updateMobileRecordingControls(); renderMobileRecordingFeed(actions);
+  document.getElementById('mobile-recording-guidance').textContent = `${actions.length} steps finalized. Open Recorder to edit, replay, save, or export.`;
+  showToast(`Mobile recording stopped with ${actions.length} steps`, 'success');
+}
+
+async function replayMobileRecordingFromStudio(button) {
+  const actions = await recorder.getActions();
+  if (!actions.length) return showToast('Record at least one mobile action before replaying', 'warning');
+  button.disabled = true; button.textContent = 'Replaying…';
+  try { await replayActions(1, 'appium', { timeoutMs: 8000, retries: 1, continueOnFailure: true,
+    resetAppState: Boolean(document.getElementById('mobile-replay-reset-state')?.checked) }); }
+  finally { button.textContent = '▷ Replay'; updateMobileRecordingControls(); }
+}
+
+async function captureNativeMobileTouch(sample) {
+  if (mobileRecordingState !== 'recording' || Date.now() < suppressNativeTouchUntil) return;
+  if (!activeMobileInspection) await refreshMobileInspection();
+  if (!activeMobileInspection) { mobileCaptureDiagnostics.dropped += 1; updateMobileRecordingClock(); return showToast('A physical gesture was detected, but hierarchy capture is unavailable', 'warning'); }
+  const screenshot = document.querySelector('.mobile-device-screenshot');
+  const display = { width: screenshot?.naturalWidth || 1, height: screenshot?.naturalHeight || 1 };
+  if (mobileTouchCalibration) sample = { ...sample,
+    start: await chromationBrowser.mobileRecording.mapAndroidInputPoint(sample.start, mobileTouchCalibration, display),
+    end: await chromationBrowser.mobileRecording.mapAndroidInputPoint(sample.end, mobileTouchCalibration, display) };
+  const inspectionBeforeAction = activeMobileInspection;
+  const focusedBefore = findFocusedEditableMobileElement(inspectionBeforeAction.elements || []);
+  const keyboardInteraction = Boolean(focusedBefore && sample.end.y >= display.height * .62);
+  const captured = keyboardInteraction ? null : await chromationBrowser.mobileRecording.capture(sample, {
+    elements: activeMobileInspection.elements || [],
+    viewportSize: { width: screenshot?.naturalWidth || 1, height: screenshot?.naturalHeight || 1 }, hierarchyCapturedAt: mobileInspectionCapturedAt,
+    platform: document.getElementById('mobile-platform')?.value || 'android', mode: document.getElementById('mobile-mode')?.value || 'native',
+    appId: document.getElementById('mobile-app-id')?.value || 'current-app', contextName: document.getElementById('mobile-context')?.value || 'NATIVE_APP',
+    screen: document.getElementById('mobile-screen')?.textContent, orientation: document.getElementById('mobile-orientation')?.textContent,
+  });
+  if (captured) {
+    const { action, replacedLast } = captured;
+    if (replacedLast) {
+      const timeline = await recorder.getActions(); await recorder.updateAction(timeline.length - 1, action);
+    } else await addRecordedMobileAction(action);
+    mobileCaptureDiagnostics.captured += 1;
+  }
+  await new Promise((resolve) => setTimeout(resolve, 180));
+  await refreshMobileInspection();
+  if (keyboardInteraction) {
+    const focusedAfter = findFocusedEditableMobileElement(activeMobileInspection?.elements || []) || focusedBefore;
+    if (await captureChangedMobileText(focusedBefore, focusedAfter)) mobileCaptureDiagnostics.captured += 1;
+    else mobileCaptureDiagnostics.dropped += 1;
+  }
+  renderMobileRecordingFeed(await chromationBrowser.mobileRecording.getActions()); updateMobileRecordingClock();
+}
+
+function findFocusedEditableMobileElement(elements) {
+  return elements.find((element) => isEditableMobileFingerprint({ tagName: element.elementType, attributes: element.attributes })
+    && ['true', '1'].includes(String(element.attributes?.focused || element.attributes?.focus || '').toLowerCase()));
+}
+
+async function captureChangedMobileText(before, after) {
+  if (!before || !after) return false;
+  const value = String(after.text ?? after.attributes?.text ?? after.attributes?.value ?? '');
+  const previousValue = String(before.text ?? before.attributes?.text ?? before.attributes?.value ?? '');
+  if (value === previousValue) return false;
+  const locator = stableMobileLocators(after.locators || [])[0] || stableMobileLocators(before.locators || [])[0];
+  if (!locator) return false;
+  const sensitive = /password|secret|token|secure/i.test(`${after.elementType || ''} ${JSON.stringify(after.attributes || {})}`);
+  const action = { id: `mobile_${Date.now()}_input`, schemaVersion: 1, type: 'input', selector: `${locator.strategy}=${locator.value}`,
+    value: sensitive ? '[REDACTED]' : value, timestamp: Date.now(), metadata: { mobileRecording: true, resolution: 'resolved', confidence: locator.score,
+      clearFirst: true, sensitive, warnings: sensitive ? ['Value is redacted; bind a secure variable before replay.'] : [] } };
+  const sessionActions = await chromationBrowser.mobileRecording.getActions(); const previous = sessionActions.at(-1);
+  const timeline = await recorder.getActions();
+  if (previous?.type === 'input' && previous.selector === action.selector) {
+    await chromationBrowser.mobileRecording.remove(previous.id); await chromationBrowser.mobileRecording.append(action);
+    const index = timeline.findIndex((item) => item.id === previous.id); if (index >= 0) await recorder.updateAction(index, action);
+  } else { await chromationBrowser.mobileRecording.append(action); await addRecordedMobileAction(action); }
+  return true;
+}
+
+mobileNativeTouchUnsubscribe = ipcRenderer.on('mobile-native-touch', (sample) => {
+  mobileNativeCaptureQueue = mobileNativeCaptureQueue.then(() => captureNativeMobileTouch(sample)).catch((error) => {
+    showToast(`Could not capture device interaction: ${error.message}`, 'error');
+  });
+});
+ipcRenderer.on('mobile-native-key', async ({ key, timestamp }) => {
+  if (mobileRecordingState !== 'recording') return;
+  const action = { id: `mobile_${timestamp}_key`, schemaVersion: 1, type: 'mobileKey', selector: 'device', value: key, timestamp,
+    metadata: { mobileRecording: true, resolution: 'resolved', confidence: 1, warnings: [] } };
+  if (await chromationBrowser.mobileRecording.append(action)) {
+    await addRecordedMobileAction(action); renderMobileRecordingFeed(await chromationBrowser.mobileRecording.getActions()); updateMobileRecordingClock();
+  }
+});
+ipcRenderer.on('mobile-touch-capture-error', (error) => {
+  if (mobileRecordingState === 'recording') { mobileCaptureDiagnostics.stream = 'degraded'; updateMobileRecordingClock(); showToast(`Device event stream warning: ${error}`, 'warning'); }
+});
+
+async function addMobileRecordingAssertion() {
+  const selected = activeMobileSelection;
+  if (!selected?.locator) return showToast('Select an element in the device hierarchy before adding an assertion', 'warning');
+  const configured = await requestMobileAssertion(selected); if (!configured) return;
+  const { kind: normalized, expected } = configured;
+  const action = { id: `mobile_${Date.now()}_assert`, schemaVersion: 1, type: 'assert',
+    selector: `${selected.locator.strategy}=${selected.locator.value}`, timestamp: Date.now(),
+    locatorFingerprint: selected.element ? { tagName: selected.element.elementType, attributes: { ...(selected.element.attributes || {}) },
+      text: selected.element.text, accessibleName: selected.element.label, boundingBox: selected.element.bounds,
+      nodePath: selected.element.nodePath || [], locatorCandidates: selected.element.locators || [] } : undefined,
+    metadata: { kind: normalized === 'text' ? 'text-contains' : normalized, expected, mobileRecording: true,
+      timeout: 5000, retries: 0, resolution: 'resolved', confidence: selected.locator.score || 0, warnings: [] } };
+  await chromationBrowser.mobileRecording.append(action);
+  await addRecordedMobileAction(action);
+  renderMobileRecordingFeed(await chromationBrowser.mobileRecording.getActions());
+  showToast('Assertion added to the mobile timeline', 'success');
+}
+
+function requestMobileAssertion(selected) {
+  const dialog = document.getElementById('mobile-assertion-dialog'); const form = document.getElementById('mobile-assertion-form');
+  const kind = document.getElementById('mobile-assertion-kind'); const expected = document.getElementById('mobile-assertion-expected');
+  const expectedField = document.getElementById('mobile-assertion-expected-field'); const cancel = document.getElementById('mobile-assertion-cancel');
+  if (!dialog || !form || !kind || !expected) return Promise.resolve(null);
+  kind.value = 'visible'; expected.value = selected.element?.text || selected.element?.label || '';
+  setText('mobile-assertion-context', selected.element?.label || selected.element?.text || selected.locator.value);
+  const sync = () => { expectedField.hidden = kind.value !== 'text'; };
+  sync(); kind.addEventListener('change', sync); dialog.classList.remove('hidden'); requestAnimationFrame(() => kind.focus());
+  return new Promise((resolve) => {
+    const finish = (value) => { dialog.classList.add('hidden'); form.removeEventListener('submit', submit); cancel.removeEventListener('click', cancelInput); kind.removeEventListener('change', sync); resolve(value); };
+    const submit = (event) => { event.preventDefault(); finish({ kind: kind.value, expected: kind.value === 'text' ? expected.value : undefined }); };
+    const cancelInput = () => finish(null); form.addEventListener('submit', submit); cancel.addEventListener('click', cancelInput);
+  });
+}
+
+function updateMobileRecordingControls() {
+  const studio = document.querySelector('.mobile-recording-studio');
+  const health = document.getElementById('mobile-recording-health');
+  const start = document.getElementById('mobile-record-start');
+  const pause = document.getElementById('mobile-record-pause');
+  const stop = document.getElementById('mobile-record-stop');
+  const replay = document.getElementById('mobile-record-replay');
+  const save = document.getElementById('mobile-record-save');
+  const exportButton = document.getElementById('mobile-record-export');
+  const assertion = document.getElementById('mobile-record-assert');
+  studio?.classList.toggle('is-recording', mobileRecordingState === 'recording');
+  if (health) { health.className = `mobile-recording-health ${mobileRecordingState}`; health.innerHTML = `<i></i>${mobileRecordingState}`; }
+  if (start) start.disabled = mobileRecordingState !== 'idle' || document.getElementById('mobile-connection-state')?.classList.contains('disconnected');
+  if (pause) { pause.disabled = mobileRecordingState === 'idle'; pause.textContent = mobileRecordingState === 'paused' ? 'Resume' : 'Pause'; }
+  if (stop) stop.disabled = mobileRecordingState === 'idle';
+  if (replay) replay.disabled = mobileRecordingState !== 'idle' || isReplaying || !(recorder.getActions()?.length);
+  if (save) save.disabled = mobileRecordingState !== 'idle' || !(recorder.getActions()?.length);
+  if (exportButton) exportButton.disabled = !(recorder.getActions()?.length);
+  if (assertion) assertion.disabled = mobileRecordingState === 'idle';
+  updateMobileRecordingClock();
+}
+
+async function updateMobileRecordingClock() {
+  const elapsed = mobileRecordingState === 'idle' ? 0 : await chromationBrowser.mobileRecording.getElapsedMs();
+  const seconds = Math.floor(elapsed / 1000);
+  setText('mobile-record-duration', `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`);
+  const actions = await chromationBrowser.mobileRecording.getActions();
+  setText('mobile-record-count', `${actions.length} step${actions.length === 1 ? '' : 's'}`);
+  setText('mobile-record-stream', `Stream ${mobileCaptureDiagnostics.stream} | ${mobileCaptureDiagnostics.captured} captured | ${mobileCaptureDiagnostics.dropped} dropped | pointer ${mobileCaptureDiagnostics.pointerDown}/${mobileCaptureDiagnostics.pointerUp}${mobileCaptureDiagnostics.lastDrop ? ` | ${mobileCaptureDiagnostics.lastDrop}` : ''}`);
+}
+
+function beginMobileRecordingPointer(event) {
+  mobileCaptureDiagnostics.pointerDown += 1; updateMobileRecordingClock();
+  if (mobileRecordingState !== 'recording') { mobileCaptureDiagnostics.dropped += 1; mobileCaptureDiagnostics.lastDrop = 'not recording'; return; }
+  const point = mapMobileScreenshotPointer(event, event.currentTarget);
+  if (!point) { mobileCaptureDiagnostics.dropped += 1; mobileCaptureDiagnostics.lastDrop = 'outside screenshot'; return; }
+  // Synthetic pointer events used by accessibility tooling and automation do
+  // not own an active browser pointer. Capturing those events emits an
+  // immediate pointercancel in Chromium and discards an otherwise valid tap.
+  if (event.isTrusted) event.currentTarget.setPointerCapture?.(event.pointerId);
+  suppressNativeTouchUntil = Date.now() + 900;
+  mobilePointerSample = { start: { x: Math.round(point.x), y: Math.round(point.y) }, startedAt: Date.now(), pointerId: event.pointerId };
+}
+
+function cancelMobileRecordingPointer() { mobilePointerSample = null; }
+
+async function finishMobileRecordingPointer(event) {
+  mobileCaptureDiagnostics.pointerUp += 1; updateMobileRecordingClock();
+  if (mobileRecordingState !== 'recording' || !mobilePointerSample || mobilePointerSample.pointerId !== event.pointerId) {
+    mobileCaptureDiagnostics.dropped += 1; mobileCaptureDiagnostics.lastDrop = !mobilePointerSample ? 'missing pointer start' : 'pointer mismatch'; updateMobileRecordingClock(); return;
+  }
+  const image = event.currentTarget;
+  const pointerVisual = { clientX: event.clientX, clientY: event.clientY };
+  const point = mapMobileScreenshotPointer(event, image);
+  if (!point) { mobilePointerSample = null; mobileCaptureDiagnostics.dropped += 1; mobileCaptureDiagnostics.lastDrop = 'release outside screenshot'; updateMobileRecordingClock(); return; }
+  const sample = { start: mobilePointerSample.start, end: { x: Math.round(point.x), y: Math.round(point.y) },
+    startedAt: mobilePointerSample.startedAt, endedAt: Date.now() };
+  mobilePointerSample = null;
+  const context = {
+    elements: activeMobileInspection?.elements || [],
+    viewportSize: { width: image.naturalWidth, height: image.naturalHeight },
+    hierarchyCapturedAt: mobileInspectionCapturedAt,
+    platform: document.getElementById('mobile-platform')?.value || 'android', mode: document.getElementById('mobile-mode')?.value || 'native',
+    appId: document.getElementById('mobile-app-id')?.value || 'current-app', contextName: document.getElementById('mobile-context')?.value || 'NATIVE_APP',
+    screen: document.getElementById('mobile-screen')?.textContent, orientation: document.getElementById('mobile-orientation')?.textContent,
+  };
+  mobileEmbeddedCaptureQueue = mobileEmbeddedCaptureQueue.then(() => processEmbeddedMobileCapture(sample, context, pointerVisual, image)).catch((error) => {
+    mobileCaptureDiagnostics.dropped += 1; mobileCaptureDiagnostics.lastDrop = error.message; updateMobileRecordingClock();
+    showToast(`Could not capture preview interaction: ${error.message}`, 'error');
+  });
+  return mobileEmbeddedCaptureQueue;
+}
+
+async function processEmbeddedMobileCapture(sample, context, pointerVisual, image) {
+  const captured = await chromationBrowser.mobileRecording.capture(sample, context);
+  if (!captured) { mobileCaptureDiagnostics.dropped += 1; mobileCaptureDiagnostics.lastDrop = 'session rejected sample'; updateMobileRecordingClock(); return; }
+  const { action, executeAction, replacedLast } = captured;
+  showMobileCaptureRipple(pointerVisual, image);
+  suppressNativeTouchUntil = Date.now() + 900;
+  const result = await ipcRenderer.invoke('mobile-action', { action: executeAction });
+  if (!result.success) {
+    action.metadata.warnings.push(`Device execution failed: ${result.error}`);
+    showToast(`Captured ${action.type}, but device execution failed: ${result.error}`, 'warning');
+  } else renderMobileInspection(result.inspection);
+  if (replacedLast) {
+    const timeline = await recorder.getActions();
+    await recorder.updateAction(timeline.length - 1, action);
+    recordedActions = await recorder.getActions();
+    updatePhase1Badges();
+    showToast('Captured double tap', 'success');
+  } else await addRecordedMobileAction(action);
+  renderMobileRecordingFeed(await chromationBrowser.mobileRecording.getActions());
+  updateMobileRecordingClock();
+  if (!replacedLast && action.type === 'tap' && isEditableMobileFingerprint(action.locatorFingerprint)) {
+    await captureMobileTextInput(action);
+  }
+  mobileCaptureDiagnostics.captured += 1; mobileCaptureDiagnostics.lastDrop = ''; updateMobileRecordingClock();
+}
+
+function isEditableMobileFingerprint(fingerprint) {
+  const type = String(fingerprint?.tagName || '').toLowerCase();
+  const attributes = fingerprint?.attributes || {};
+  return type.includes('edittext') || type.includes('textfield') || type.includes('securetextfield')
+    || attributes.editable === 'true' || attributes.focusable === 'true' && attributes.clickable === 'true' && /input|text/i.test(type);
+}
+
+function requestMobileTextInput(fingerprint) {
+  const dialog = document.getElementById('mobile-text-dialog'); const form = document.getElementById('mobile-text-form');
+  const value = document.getElementById('mobile-text-value'); const sensitive = document.getElementById('mobile-text-sensitive');
+  const clear = document.getElementById('mobile-text-clear'); const cancel = document.getElementById('mobile-text-cancel');
+  if (!dialog || !form || !value) return Promise.resolve(null);
+  const attributes = fingerprint?.attributes || {};
+  sensitive.checked = /password|secret|token|secure/i.test(`${fingerprint?.tagName || ''} ${attributes.password || ''} ${attributes['resource-id'] || ''} ${attributes.name || ''}`);
+  clear.checked = true; value.type = sensitive.checked ? 'password' : 'text'; value.value = '';
+  setText('mobile-text-context', fingerprint?.accessibleName || attributes.text || attributes['resource-id'] || 'Selected editable field');
+  const syncType = () => { value.type = sensitive.checked ? 'password' : 'text'; };
+  sensitive.addEventListener('change', syncType); dialog.classList.remove('hidden'); requestAnimationFrame(() => value.focus());
+  return new Promise((resolve) => {
+    const finish = (result) => { dialog.classList.add('hidden'); form.removeEventListener('submit', submit); cancel.removeEventListener('click', cancelInput); sensitive.removeEventListener('change', syncType); resolve(result); };
+    const submit = (event) => { event.preventDefault(); finish({ value: value.value, sensitive: sensitive.checked, clearFirst: clear.checked }); };
+    const cancelInput = () => finish(null); form.addEventListener('submit', submit); cancel.addEventListener('click', cancelInput);
+  });
+}
+
+async function captureMobileTextInput(tapAction) {
+  const captured = await requestMobileTextInput(tapAction.locatorFingerprint); if (!captured) return;
+  const liveValue = captured.value;
+  if (captured.clearFirst) {
+    const cleared = await ipcRenderer.invoke('mobile-action', { action: { type: 'clear', selector: tapAction.selector, timestamp: Date.now() } });
+    if (!cleared.success) return showToast(`Could not clear the mobile field: ${cleared.error}`, 'error');
+  }
+  const result = await ipcRenderer.invoke('mobile-action', { action: { type: 'input', selector: tapAction.selector, value: liveValue, timestamp: Date.now(), metadata: { clearFirst: false } } });
+  if (!result.success) return showToast(`Mobile text input failed: ${result.error}`, 'error');
+  const action = { id: `mobile_${Date.now()}_input`, schemaVersion: 1, type: 'input', selector: tapAction.selector,
+    value: captured.sensitive ? '[REDACTED]' : liveValue, timestamp: Date.now(), locatorFingerprint: tapAction.locatorFingerprint,
+    metadata: { mobileRecording: true, resolution: tapAction.metadata.resolution, confidence: tapAction.metadata.confidence,
+      clearFirst: captured.clearFirst, sensitive: captured.sensitive, warnings: captured.sensitive ? ['Value is redacted; bind a secure variable before replay.'] : [] } };
+  await chromationBrowser.mobileRecording.append(action);
+  await addRecordedMobileAction(action); renderMobileInspection(result.inspection);
+  renderMobileRecordingFeed(await chromationBrowser.mobileRecording.getActions()); updateMobileRecordingClock();
+}
+
+function showMobileCaptureRipple(event, image) {
+  const surface = image.closest('.mobile-screenshot-surface'); if (!surface) return;
+  const rect = surface.getBoundingClientRect(); const ripple = document.createElement('i'); ripple.className = 'mobile-capture-ripple';
+  ripple.style.left = `${event.clientX - rect.left}px`; ripple.style.top = `${event.clientY - rect.top}px`; surface.appendChild(ripple);
+  setTimeout(() => ripple.remove(), 650);
+}
+
+function renderMobileRecordingFeed(actions) {
+  const feed = document.getElementById('mobile-live-action-feed'); if (!feed) return;
+  if (!actions.length) { feed.innerHTML = '<div class="empty-state"><strong>No captured actions</strong><span>Recorded taps, long presses, swipes, and device keys will appear here.</span></div>'; return; }
+  const icons = { launchApp: '◇', tap: '●', doubleclick: '◎', longPress: '◉', swipe: '↗', assert: '✓', input: '⌨' };
+  feed.innerHTML = actions.map((action, index) => `<article class="mobile-feed-step ${action.metadata?.resolution === 'coordinate-only' ? 'coordinate' : ''}" data-mobile-recording-id="${escapeReportText(action.id)}"><b>${index + 1}</b><span class="step-symbol">${icons[action.type] || '•'}</span><div><strong>${escapeReportText(action.type)}</strong><code title="${escapeReportText(action.selector)}">${escapeReportText(action.selector)}</code></div><em>${escapeReportText(action.metadata?.resolution || 'authored')}</em><div class="mobile-feed-actions"><button data-mobile-feed-edit title="Edit in timeline" aria-label="Edit step">✎</button><button data-mobile-feed-delete title="Delete step" aria-label="Delete step" ${index === 0 ? 'disabled' : ''}>×</button></div></article>`).join('');
+  feed.querySelectorAll('.mobile-feed-step').forEach((step, index) => {
+    step.dataset.mobileIndex = String(index); step.draggable = index > 0;
+    step.querySelector('b').title = index > 0 ? 'Drag to reorder' : 'Launch step is fixed';
+    if (index > 0) {
+      const duplicate = document.createElement('button'); duplicate.dataset.mobileFeedDuplicate = '';
+      duplicate.title = 'Duplicate step'; duplicate.setAttribute('aria-label', 'Duplicate step'); duplicate.textContent = '⧉';
+      step.querySelector('.mobile-feed-actions').prepend(duplicate);
+    }
+  });
+  feed.querySelectorAll('[data-mobile-feed-duplicate]').forEach((button) => button.addEventListener('click', async () => {
+    const id = button.closest('[data-mobile-recording-id]').dataset.mobileRecordingId;
+    if (!await chromationBrowser.mobileRecording.duplicate(id)) return;
+    const sessionActions = await chromationBrowser.mobileRecording.getActions();
+    await recorder.setActions(sessionActions); recordedActions = await recorder.getActions(); updatePhase1Badges();
+    renderMobileRecordingFeed(sessionActions); updateMobileRecordingClock();
+  }));
+  feed.querySelectorAll('[data-mobile-feed-edit]').forEach((button) => button.addEventListener('click', async () => {
+    const id = button.closest('[data-mobile-recording-id]').dataset.mobileRecordingId;
+    const timeline = await recorder.getActions(); const index = timeline.findIndex((action) => action.id === id);
+    if (index < 0) return showToast('This step is no longer in the shared timeline', 'warning');
+    showRecorderPanel(); openStepEditor(index);
+  }));
+  feed.querySelectorAll('[data-mobile-feed-delete]').forEach((button) => button.addEventListener('click', async () => {
+    const id = button.closest('[data-mobile-recording-id]').dataset.mobileRecordingId;
+    if (!await chromationBrowser.mobileRecording.remove(id)) return;
+    const timeline = await recorder.getActions(); const index = timeline.findIndex((action) => action.id === id);
+    if (index >= 0) await recorder.deleteAction(index);
+    recordedActions = await recorder.getActions(); updatePhase1Badges();
+    renderMobileRecordingFeed(await chromationBrowser.mobileRecording.getActions()); updateMobileRecordingClock();
+  }));
+  let draggedId = null;
+  feed.querySelectorAll('.mobile-feed-step[draggable="true"]').forEach((step) => {
+    step.addEventListener('dragstart', (event) => { draggedId = step.dataset.mobileRecordingId; event.dataTransfer.effectAllowed = 'move'; });
+    step.addEventListener('dragover', (event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; });
+    step.addEventListener('drop', async (event) => {
+      event.preventDefault(); if (!draggedId) return;
+      if (!await chromationBrowser.mobileRecording.move(draggedId, Number(step.dataset.mobileIndex))) return;
+      const sessionActions = await chromationBrowser.mobileRecording.getActions();
+      await recorder.setActions(sessionActions); recordedActions = await recorder.getActions(); updatePhase1Badges();
+      renderMobileRecordingFeed(sessionActions); updateMobileRecordingClock();
+    });
+  });
+  feed.lastElementChild?.scrollIntoView?.({ block: 'nearest' });
+}
+
+function mapMobileScreenshotPointer(event, image) {
+  const viewport = image.getBoundingClientRect();
+  const original = { width: image.naturalWidth, height: image.naturalHeight };
+  if (!original.width || !original.height) return null;
+  const scale = Math.min(viewport.width / original.width, viewport.height / original.height);
+  const width = original.width * scale;
+  const height = original.height * scale;
+  const left = viewport.left + (viewport.width - width) / 2;
+  const top = viewport.top + (viewport.height - height) / 2;
+  if (event.clientX < left || event.clientY < top || event.clientX > left + width || event.clientY > top + height) return null;
+  return { x: (event.clientX - left) / scale, y: (event.clientY - top) / scale };
+}
+
+function resolveMobileElementAtPoint(elements, point) {
+  return elements.map((element, index) => ({ element, index }))
+    .filter(({ element }) => element.bounds && element.bounds.width > 0 && element.bounds.height > 0
+      && element.attributes?.displayed !== 'false' && element.attributes?.visible !== 'false'
+      && point.x >= element.bounds.x && point.y >= element.bounds.y
+      && point.x <= element.bounds.x + element.bounds.width && point.y <= element.bounds.y + element.bounds.height)
+    .sort((left, right) => (left.element.bounds.width * left.element.bounds.height)
+      - (right.element.bounds.width * right.element.bounds.height)
+      || (right.element.nodePath?.length || 0) - (left.element.nodePath?.length || 0))[0] || null;
+}
+
+function stableMobileLocators(locators) {
+  return locators.filter((locator) => locator.score >= .5 && locator.strategy.toLowerCase() !== 'xpath');
+}
+
+function handleMobileScreenshotPointer(event) {
+  if (!document.querySelector('.mobile-inspector-card.expanded') || !activeMobileInspection) return;
+  const point = mapMobileScreenshotPointer(event, event.currentTarget);
+  if (!point) return showToast('That point is in the screenshot letterbox', 'warning');
+  const match = resolveMobileElementAtPoint(activeMobileInspection.elements, point);
+  if (!match) {
+    activeMobileSelection = null;
+    document.querySelector('.mobile-element-highlight')?.classList.remove('visible');
+    document.getElementById('mobile-locator-preview').innerHTML = '<p class="panel-description">No compatible hierarchy element contains this point.</p>';
+    document.querySelector('[data-mobile-tab="locators"]')?.click();
+    return;
+  }
+  selectMobileElement(match.element, match.index, point);
+}
+
+function selectMobileElement(element, index, point = null) {
+  document.querySelectorAll('.mobile-hierarchy-node').forEach((node) => node.classList.toggle('selected', Number(node.dataset.mobileElementIndex) === index));
+  activeMobileSelection = { element, locator: stableMobileLocators(element.locators)[0] || null,
+    coordinates: point ? { x: Math.round(point.x), y: Math.round(point.y) } : null };
+  highlightMobileElement(element);
+  renderMobileLocators(element);
+}
+
+function highlightMobileElement(element) {
+  const image = document.querySelector('.mobile-device-screenshot');
+  const highlight = document.querySelector('.mobile-element-highlight');
+  if (!image || !highlight || !element.bounds || !image.naturalWidth || !image.naturalHeight) return;
+  const scale = Math.min(image.clientWidth / image.naturalWidth, image.clientHeight / image.naturalHeight);
+  const offsetX = (image.clientWidth - image.naturalWidth * scale) / 2;
+  const offsetY = (image.clientHeight - image.naturalHeight * scale) / 2;
+  Object.assign(highlight.style, { left: `${offsetX + element.bounds.x * scale}px`, top: `${offsetY + element.bounds.y * scale}px`,
+    width: `${element.bounds.width * scale}px`, height: `${element.bounds.height * scale}px` });
+  highlight.classList.add('visible');
 }
 
 function renderMobileLocators(element) {
   const target = document.getElementById('mobile-locator-preview');
-  activeMobileSelection = { element, locator: element.locators[0] || null };
-  target.innerHTML = element.locators.length ? `${element.locators.map((locator, index) => `
-    <button class="mobile-locator-option ${index === 0 ? 'selected' : ''}" data-mobile-locator-index="${index}"><span class="locator-rank ${locator.score >= .9 ? 'strong' : ''}">${Math.round(locator.score * 100)}</span><code>${escapeReportText(locator.strategy)}=${escapeReportText(locator.value)}</code><small>${escapeReportText((locator.reasons || []).join(' · '))}</small></button>
-  `).join('')}<div class="mobile-live-controls"><input id="mobile-live-input" class="form-input" placeholder="Text to type"><div><button id="mobile-live-tap" class="primary-btn">Tap</button><button id="mobile-live-type" class="secondary-btn">Type</button><button id="mobile-live-clear" class="secondary-btn">Clear</button><button id="mobile-add-step" class="secondary-btn">Add step</button></div></div>` : '<p class="panel-description">No locator candidates are available for this element.</p>';
+  const stable = stableMobileLocators(element.locators);
+  if (!activeMobileSelection || activeMobileSelection.element !== element) {
+    activeMobileSelection = { element, locator: stable[0] || null, coordinates: null };
+  }
+  const selectedLocator = activeMobileSelection.locator;
+  const elementName = element.attributes?.text || element.attributes?.label || element.attributes?.name || element.elementType;
+  target.innerHTML = `<div class="mobile-selection-summary"><span>Selected target</span><strong>${escapeReportText(elementName)}</strong><small>${selectedLocator ? `${escapeReportText(selectedLocator.strategy)} · ${Math.round(selectedLocator.score * 100)}% confidence` : 'Coordinate fallback'}</small></div>${element.locators.map((locator, index) => `
+    <button class="mobile-locator-option ${locator === selectedLocator ? 'selected' : ''}" data-mobile-locator-index="${index}" ${stableMobileLocators([locator]).length ? '' : 'aria-disabled="true"'}><span class="locator-rank ${locator.score >= .9 ? 'strong' : ''}">${Math.round(locator.score * 100)}</span><code>${escapeReportText(locator.strategy)}=${escapeReportText(locator.value)}</code><small>${escapeReportText((locator.reasons || []).join(' · '))}</small></button>
+  `).join('')}${stable.length ? '' : '<p class="mobile-coordinate-fallback"><strong>Coordinate fallback</strong><span>No stable locator is available. This step may be less resilient if the screen layout changes.</span></p>'}<div class="mobile-live-controls"><label for="mobile-live-input">Optional text</label><input id="mobile-live-input" class="form-input" placeholder="Enter text for this field"><div class="mobile-primary-actions"><button id="mobile-tap-add" class="primary-btn">Tap &amp; add step</button><button id="mobile-add-step" class="secondary-btn">Add without running</button></div><details class="mobile-more-actions"><summary>More device actions</summary><div><button id="mobile-live-tap" class="secondary-btn">Tap only</button><button id="mobile-live-type" class="secondary-btn">Type only</button><button id="mobile-live-clear" class="secondary-btn">Clear field</button></div></details></div>`;
   target.querySelectorAll('[data-mobile-locator-index]').forEach((button) => button.addEventListener('click', () => {
-    target.querySelectorAll('.mobile-locator-option').forEach((item) => item.classList.toggle('selected', item === button));
-    activeMobileSelection.locator = element.locators[Number(button.dataset.mobileLocatorIndex)];
+    const locator = element.locators[Number(button.dataset.mobileLocatorIndex)];
+    if (stableMobileLocators([locator]).length) {
+      activeMobileSelection.locator = locator;
+      renderMobileLocators(element);
+    }
+    else showToast('This locator is too fragile to use. Choose a stable option or the screenshot fallback.', 'warning');
   }));
   document.getElementById('mobile-live-tap')?.addEventListener('click', () => runLiveMobileAction('tap'));
   document.getElementById('mobile-live-type')?.addEventListener('click', () => runLiveMobileAction('input'));
   document.getElementById('mobile-live-clear')?.addEventListener('click', () => runLiveMobileAction('clear'));
-  document.getElementById('mobile-add-step')?.addEventListener('click', addSelectedMobileStep);
+  document.getElementById('mobile-add-step')?.addEventListener('click', () => addSelectedMobileStep());
+  document.getElementById('mobile-tap-add')?.addEventListener('click', async () => {
+    const action = buildSelectedMobileAction('tap');
+    if (!action) return showToast('Select a mobile element and locator first', 'warning');
+    const completed = await runLiveMobileAction('tap');
+    if (completed) await addRecordedMobileAction(action);
+  });
   document.querySelector('[data-mobile-tab="locators"]')?.click();
 }
 
 function buildSelectedMobileAction(type) {
-  if (!activeMobileSelection?.locator) return null;
+  if (!activeMobileSelection?.locator && !activeMobileSelection?.coordinates) return null;
   const locator = activeMobileSelection.locator;
   const element = activeMobileSelection.element;
   const value = type === 'input' ? document.getElementById('mobile-live-input')?.value ?? '' : undefined;
   return {
     type,
-    selector: `${locator.strategy}=${locator.value}`,
+    selector: locator ? `${locator.strategy}=${locator.value}` : `coordinates=${Math.round(activeMobileSelection.coordinates.x)},${Math.round(activeMobileSelection.coordinates.y)}`,
     value,
     timestamp: Date.now(),
     locatorFingerprint: {
@@ -1034,9 +1990,10 @@ async function runLiveMobileAction(type) {
   const action = buildSelectedMobileAction(type);
   if (!action) return showToast('Select a mobile element and locator first', 'warning');
   const result = await ipcRenderer.invoke('mobile-action', { action });
-  if (!result.success) return showToast(`Mobile action failed: ${result.error}`, 'error');
+  if (!result.success) { showToast(`Mobile action failed: ${result.error}`, 'error'); return false; }
   renderMobileInspection(result.inspection);
   showToast(`${type} completed on device`, 'success');
+  return true;
 }
 
 async function runMobileDeviceAction(type, value) {
@@ -1052,18 +2009,55 @@ async function runMobileDeviceAction(type, value) {
   contextSelect.value = result.status.context || 'NATIVE_APP';
   document.getElementById('mobile-screen').textContent = result.status.screen || '—';
   document.getElementById('mobile-orientation').textContent = result.status.orientation || 'PORTRAIT';
+  document.getElementById('mobile-keyboard-state').textContent = result.status.keyboardShown ? 'Shown' : 'Hidden';
+  if (mobileRecordingState === 'recording') {
+    const action = { id: `mobile_${Date.now()}_${type}`, schemaVersion: 1, type, selector: 'device', value, timestamp: Date.now(),
+      metadata: { mobileRecording: true, resolution: 'resolved', confidence: 1, warnings: [] } };
+    if (await chromationBrowser.mobileRecording.append(action)) {
+      await addRecordedMobileAction(action);
+      renderMobileRecordingFeed(await chromationBrowser.mobileRecording.getActions());
+      updateMobileRecordingClock();
+    }
+  }
   showToast(`${type} completed on device`, 'success');
 }
 
-async function addSelectedMobileStep() {
+async function addSelectedMobileStep(forcedType) {
   const value = document.getElementById('mobile-live-input')?.value ?? '';
-  const action = buildSelectedMobileAction(value ? 'input' : 'tap');
+  const action = buildSelectedMobileAction(forcedType || (value ? 'input' : 'tap'));
   if (!action) return showToast('Select a mobile element and locator first', 'warning');
+  await addRecordedMobileAction(action);
+}
+
+async function addRecordedMobileAction(action) {
   const actions = await recorder.getActions();
   await recorder.setActions([...actions, action]);
   recordedActions = await recorder.getActions();
+  currentRecordingTarget = {
+    platform: 'android',
+    mode: document.getElementById('mobile-mode')?.value || 'native',
+    name: document.getElementById('mobile-device-name')?.value.trim() || undefined,
+    appId: document.getElementById('mobile-app-id')?.value.trim() || undefined,
+    appActivity: document.getElementById('mobile-app-activity')?.value.trim() || undefined,
+  };
   updatePhase1Badges();
   showToast(`Added ${action.type} step to the recording`, 'success');
+}
+
+async function beginIsolatedMobileRecording(launchAction, target) {
+  await recorder.setActions([launchAction]);
+  recordedActions = await recorder.getActions();
+  currentRecordingFilename = null;
+  currentRecordingTarget = {
+    platform: document.getElementById('mobile-platform')?.value || 'android',
+    mode: document.getElementById('mobile-mode')?.value || 'native',
+    name: document.getElementById('mobile-device-name')?.value.trim() || undefined,
+    appId: target.appId,
+    appActivity: target.appActivity || undefined,
+  };
+  workspaceSessionStores.mobile = { actions: recordedActions, target: { ...currentRecordingTarget } };
+  persistWorkspaceDrafts();
+  updatePhase1Badges();
 }
 
 function setActiveRailAction(value) {
@@ -1205,6 +2199,21 @@ async function initializeSuiteControls() {
     renderSelection();
   };
   select?.addEventListener('change', renderSelection);
+  const syncBrowserTags = () => {
+    const selected = [...document.querySelectorAll('#matrix-browser-picker .browser-tag.selected')].map((button) => button.dataset.browser);
+    document.getElementById('matrix-browsers').value = selected.join(',');
+  };
+  document.querySelectorAll('#matrix-browser-picker .browser-tag').forEach((button) => button.addEventListener('click', () => {
+    button.classList.toggle('selected');
+    if (!document.querySelector('#matrix-browser-picker .browser-tag.selected')) button.classList.add('selected');
+    syncBrowserTags();
+  }));
+  const changeConcurrency = (delta) => {
+    const input = document.getElementById('matrix-concurrency');
+    input.value = String(Math.max(1, Math.min(32, Number(input.value || 1) + delta)));
+  };
+  document.getElementById('matrix-concurrency-down')?.addEventListener('click', () => changeConcurrency(-1));
+  document.getElementById('matrix-concurrency-up')?.addEventListener('click', () => changeConcurrency(1));
   document.getElementById('suite-help-btn')?.addEventListener('click', () => showHelp('suite'));
   document.getElementById('create-suite-btn')?.addEventListener('click', async () => {
     const name = document.getElementById('suite-name')?.value.trim();
@@ -1272,6 +2281,7 @@ function showRecorderPanel() {
   const replayTimeoutInput = document.getElementById('replay-timeout-input');
   const replayRetriesInput = document.getElementById('replay-retries-input');
   const replayContinueOnFailure = document.getElementById('replay-continue-on-failure');
+  const replayResetAppState = document.getElementById('replay-reset-app-state');
   const reportFormatSelect = document.getElementById('report-format-select');
   const exportReportBtn = document.getElementById('export-report-btn');
   const exportAllReportsBtn = document.getElementById('export-all-reports-btn');
@@ -1341,6 +2351,7 @@ function showRecorderPanel() {
         timeoutMs: Math.max(1000, parseInt(replayTimeoutInput?.value || '8000', 10) || 8000),
         retries: Math.max(0, parseInt(replayRetriesInput?.value || '1', 10) || 0),
         continueOnFailure: Boolean(replayContinueOnFailure?.checked),
+        resetAppState: Boolean(replayResetAppState?.checked),
       };
       replayActions(parseFloat(replaySpeedSelect.value), replayEngineSelect?.value || 'webview', policy);
     });
@@ -1829,7 +2840,7 @@ function injectRecordingScript() {
           draggedElement = null;
         }, true);
         
-        console.log('Chromation: Enhanced recording injected - capturing clicks, inputs, scrolls, keys, and more');
+        console.log('OmniFlow QA: Enhanced recording injected - capturing clicks, inputs, scrolls, keys, and more');
       })();
     `);
     
@@ -2432,14 +3443,24 @@ function saveStepEditor(index) {
 async function exportScript(format) {
   if (!recorder) return;
   
-  const script = await recorder.exportScript(format);
+  const generated = await recorder.exportScript(format);
+  const workspace = workspaceForRecordingTarget(currentRecordingTarget);
+  const targetLabel = workspace === 'mobile'
+    ? `MOBILE (${currentRecordingTarget.platform === 'ios' ? 'iOS' : 'Android'})`
+    : 'WEB (Desktop / Mobile Browser)';
+  const comment = format.includes('python')
+    ? `# OmniFlow QA - Recorded Test Script\n# Target: ${targetLabel}\n# Product of Infinity Lines of Code Pvt Ltd\n\n`
+    : `/**\n * OmniFlow QA - Recorded Test Script\n * Target: ${targetLabel}\n * Product of Infinity Lines of Code Pvt Ltd\n */\n\n`;
+  const script = comment + generated;
   
   // Create a download
   const blob = new Blob([script], { type: 'text/plain' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `test-script-${format}.${format.includes('python') ? 'py' : 'js'}`;
+  const extension = format.includes('python') ? 'py' : format.includes('java') ? 'java' : format === 'appium-typescript' ? 'ts' : 'js';
+  const cleanFormat = format.replace(/[^a-z0-9]+/gi, '_').toLowerCase();
+  a.download = `${workspace}_${cleanFormat}.spec.${extension}`;
   a.click();
   URL.revokeObjectURL(url);
   
@@ -2469,7 +3490,7 @@ function updateReplayButton() {
   replayBtn.disabled = actions.length === 0 || isRecording;
 }
 
-async function replayActions(speed = 1.0, engine = 'webview', policy = { timeoutMs: 8000, retries: 1, continueOnFailure: true }) {
+async function replayActions(speed = 1.0, engine = 'webview', policy = { timeoutMs: 8000, retries: 1, continueOnFailure: true, resetAppState: false }) {
   if (!recorder || isReplaying || isRecording) return;
   
   const actions = recorder.getActions();
@@ -2504,14 +3525,26 @@ async function replayActions(speed = 1.0, engine = 'webview', policy = { timeout
     `;
   }
   
-  statusText.textContent = engine === 'playwright'
-    ? `Running ${actions.length} actions with Playwright executor...`
-    : `Replaying ${actions.length} actions at ${speed}x speed...`;
+  statusText.textContent = engine === 'appium'
+    ? `Running ${actions.length} actions on Android...`
+    : engine === 'playwright'
+      ? `Running ${actions.length} actions with Playwright executor...`
+      : `Replaying ${actions.length} actions at ${speed}x speed...`;
   if (requestedEngine === 'auto') {
     showToast(`Auto selected ${engine === 'playwright' ? 'Playwright' : 'In-Browser Replay'}`, 'info');
   }
   
   try {
+    if (engine === 'appium') {
+      await replayActionsWithAndroid(actions, policy);
+      throwIfReplayCancelled(replaySignal);
+      replayEndedAt = Date.now();
+      replayTerminalState = replayReport.failed.length > 0 ? 'failed' : 'passed';
+      await persistRunHistory();
+      statusText.textContent = `Android replay completed: ${replayReport.passed.length} passed, ${replayReport.failed.length} failed`;
+      showReplayReport();
+      return;
+    }
     if (engine === 'playwright') {
       await replayActionsWithExecutor(actions, policy);
       throwIfReplayCancelled(replaySignal);
@@ -2606,6 +3639,7 @@ async function replayActions(speed = 1.0, engine = 'webview', policy = { timeout
       replayTerminalState = 'failed';
       console.error('Replay error:', error);
       statusText.textContent = 'Replay failed: ' + error.message;
+      showToast(`Replay failed: ${error.message}`, 'error');
     }
   } finally {
     isReplaying = false;
@@ -2697,6 +3731,53 @@ async function replayActionsWithExecutor(actions, policy) {
   }
 }
 
+function currentMobileConnection() {
+  return {
+    platform: 'android',
+    mode: currentRecordingTarget.mode || document.getElementById('mobile-mode')?.value || 'native',
+    serverUrl: document.getElementById('mobile-server-url')?.value || 'http://127.0.0.1:4723',
+    deviceName: document.getElementById('mobile-device-name')?.value.trim() || currentRecordingTarget.name || 'Android',
+    udid: document.getElementById('mobile-device-udid')?.value.trim() || '',
+    appId: document.getElementById('mobile-app-id')?.value.trim() || currentRecordingTarget.appId || '',
+    appActivity: document.getElementById('mobile-app-activity')?.value.trim() || '',
+  };
+}
+
+async function replayActionsWithAndroid(actions, policy) {
+  const healingPolicy = await Promise.resolve(healingEngine?.getApprovalPolicy?.() || 'ask');
+  const connection = currentMobileConnection();
+  const preflight = await ipcRenderer.invoke('mobile-preflight', { actions, connection });
+  if (!preflight.success || !preflight.supported) throw new Error(preflight.error || `Unsupported Android actions: ${preflight.unsupported.join(', ')}`);
+  if (preflight.warnings.length) showToast(`${preflight.warnings.length} mobile reliability warning${preflight.warnings.length === 1 ? '' : 's'} noted in preflight`, 'warning');
+  const result = await ipcRenderer.invoke('mobile-replay', {
+    actions,
+    connection,
+    healingPolicy,
+    options: {
+      continueOnFailure: policy.continueOnFailure,
+      defaultStepTimeoutMs: policy.timeoutMs,
+      globalTimeoutMs: Math.max(30_000, actions.length * (policy.timeoutMs + 1000)),
+      resetAppState: policy.resetAppState === true,
+    },
+  });
+  if (!result?.success) throw new Error(result?.error || 'Android replay failed');
+  const execution = result.execution;
+  if (!execution || !execution.summary) throw new Error('Android replay returned no execution result');
+  if (execution.runError) throw new Error(`Android replay stopped before completion: ${execution.runError}`);
+  if (actions.length > 0 && execution.steps.length === 0) throw new Error('Android replay did not execute any steps');
+  replayReport = {
+    total: execution.summary.total,
+    passed: execution.steps.filter((step) => step.status === 'passed').map((step) => ({ index: step.index, action: step.action, error: null, duration: step.durationMs, screenshot: step.evidence?.screenshotBase64 || null, healing: step.healing || null })),
+    failed: execution.steps.filter((step) => ['failed', 'cancelled'].includes(step.status)).map((step) => ({ index: step.index, action: step.action, error: step.error || 'Execution failed', duration: step.durationMs, screenshot: step.evidence?.screenshotBase64 || null, healing: step.healing || null })),
+  };
+  const report = reporter.fromExecutionResult('Android Recorder Replay', execution);
+  report.sourceRecordingFilename = currentRecordingFilename;
+  report.replayEngine = 'appium';
+  report.environment = { runtime: 'appium-uiautomator2', headless: false };
+  lastReplayExecution = execution;
+  lastReplayExecutionReport = report;
+}
+
 async function captureInteractivePageState() {
   try {
     const url = browserWebview?.getURL?.() || '';
@@ -2714,6 +3795,8 @@ async function captureInteractivePageState() {
 }
 
 function resolveReplayEngine(engine, actions) {
+  const mobileActions = new Set(['tap', 'longPress', 'swipe', 'back', 'rotate', 'clear', 'installApp', 'launchApp', 'terminateApp', 'switchContext', 'hideKeyboard', 'deepLink', 'acceptAlert', 'dismissAlert', 'grantPermission', 'revokePermission', 'resetApp', 'clearAppData', 'mobileKey']);
+  if (currentRecordingTarget.platform === 'android' || actions.some((action) => mobileActions.has(action.type) || action.locatorFingerprint?.mobileContext)) return 'appium';
   if (engine !== 'auto') return engine;
   const playwrightOnly = new Set(['visual', 'api', 'mockNetwork', 'accessibility', 'performance', 'plugin']);
   return actions.some((action) =>
@@ -2785,6 +3868,7 @@ function cancelReplay() {
   if (chromationBrowser && typeof chromationBrowser.cancelExecution === 'function') {
     chromationBrowser.cancelExecution('Replay cancelled by user');
   }
+  if (currentReplayEngine === 'appium') ipcRenderer.invoke('mobile-cancel-replay').catch(() => undefined);
   statusText.textContent = 'Stopping replay...';
   return true;
 }
@@ -2900,6 +3984,18 @@ function releaseWebviewReplayWaiters() {
 
 function startReplayStateMonitor() {
   stopReplayStateMonitor();
+  if (currentReplayEngine === 'appium') {
+    replayStatePoll = setInterval(async () => {
+      const result = await ipcRenderer.invoke('mobile-replay-status').catch(() => null);
+      const snapshot = result?.state; if (!snapshot || !isReplaying) return;
+      updateExecutionControls(snapshot);
+      if (Number.isInteger(snapshot.currentStep) && snapshot.currentStep >= 0) {
+        highlightReplayingAction(snapshot.currentStep);
+        statusText.textContent = `Android replay: step ${snapshot.currentStep + 1} of ${snapshot.totalSteps}`;
+      }
+    }, 250);
+    return;
+  }
   if (currentReplayEngine !== 'playwright') return;
   replayStatePoll = setInterval(() => {
     const snapshot = chromationBrowser?.getExecutionState?.();
@@ -3582,12 +4678,12 @@ function toggleHealing() {
     healingEngine.disable();
     if (statusSpan) statusSpan.textContent = 'OFF';
     if (statusSpan) statusSpan.style.color = '#ea4335';
-    healingStatus.textContent = '🔧 Auto-heal: OFF';
+    healingStatus.textContent = 'Auto-heal · OFF';
   } else {
     healingEngine.enable();
     if (statusSpan) statusSpan.textContent = 'ON';
     if (statusSpan) statusSpan.style.color = '#34a853';
-    healingStatus.textContent = '🔧 Auto-heal: ON';
+    healingStatus.textContent = 'Auto-heal · ON';
   }
 }
 
@@ -3613,12 +4709,12 @@ ipcRenderer.on('toggle-healing', (enabled) => {
       healingEngine.enable();
       if (statusSpan) statusSpan.textContent = 'ON';
       if (statusSpan) statusSpan.style.color = '#34a853';
-      healingStatus.textContent = '🔧 Auto-heal: ON';
+      healingStatus.textContent = 'Auto-heal · ON';
     } else {
       healingEngine.disable();
       if (statusSpan) statusSpan.textContent = 'OFF';
       if (statusSpan) statusSpan.style.color = '#ea4335';
-      healingStatus.textContent = '🔧 Auto-heal: OFF';
+      healingStatus.textContent = 'Auto-heal · OFF';
     }
   }
 });
@@ -3648,12 +4744,21 @@ const phase1Commands = [
 function showBrowseWorkspace() {
   homeWorkspace?.classList.add('hidden');
   hideReportWorkspace();
+  if (activeAutomationWorkspace === 'mobile') {
+    browserView?.classList.add('hidden');
+    setActiveRailAction('mobile');
+    return;
+  }
   setActiveRailAction('browse');
   const tab = tabs?.find?.((item) => item.id === activeTabId);
   if (tab) tab.uiState = { ...(tab.uiState || {}), workspace: 'browse' };
 }
 
 async function showHomeWorkspace() {
+  if (activeAutomationWorkspace === 'mobile') {
+    browserView?.classList.add('hidden'); homeWorkspace?.classList.add('hidden');
+    return;
+  }
   reportWorkspace?.classList.add('hidden');
   browserView?.classList.add('hidden');
   homeWorkspace?.classList.remove('hidden');
@@ -3684,6 +4789,7 @@ async function refreshHomeWorkspace() {
   const completed = Number(analytics.completedRuns ?? (passed + failed));
   const rate = completed ? Math.round((passed / completed) * 100) : 0;
   setText('home-health-score', `${rate}%`);
+  document.getElementById('home-health-ring')?.style.setProperty('--kpi-progress', `${rate * 3.6}deg`);
   setText('home-run-count', reports.length);
   setText('home-failure-count', failed);
   setText('home-healed-count', healed);
@@ -3709,12 +4815,13 @@ function renderHomeRecordings(recordings) {
   target.innerHTML = recordings.map((recording) => {
     const name = recording.name || recording.title || getSuggestedRecordingName(recording.actions);
     const count = recording.actionCount ?? recording.actions?.length ?? 0;
-    const date = new Date(recording.createdAt || recording.timestamp || Date.now()).toLocaleDateString();
+    const timestamp = recording.updatedAt || recording.createdAt || recording.timestamp || Date.now();
+    const date = formatRelativeTime(timestamp);
     const filename = escapeReportText(recording.filename);
     return `<article class="recording-row" data-filename="${filename}">
-      <button class="recording-main home-load-recording" data-filename="${filename}" title="Open ${escapeReportText(name)}">
+      <button class="recording-main home-load-recording" data-filename="${filename}" title="Edit ${escapeReportText(name)}">
         <span class="recording-avatar">${escapeReportText(getRecordingInitials(name))}</span>
-        <span><strong>${escapeReportText(name)}</strong><small>${count} actions · Updated ${date}</small></span>
+        <span><strong>${escapeReportText(name)}</strong><small><em class="recording-status-tag ready">Ready</em>${count} actions · ${date}</small></span>
       </button>
       <div class="recording-row-actions">
         <button class="home-replay-recording" data-filename="${filename}" title="Replay recording" aria-label="Replay ${escapeReportText(name)}">▶</button>
@@ -3746,6 +4853,17 @@ function renderHomeRecordings(recordings) {
 
 function getRecordingInitials(name) {
   return String(name || 'Test').split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join('').toUpperCase();
+}
+
+function formatRelativeTime(value) {
+  const elapsed = Math.max(0, Date.now() - Number(value));
+  const minutes = Math.floor(elapsed / 60_000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return days < 30 ? `${days}d ago` : new Date(Number(value)).toLocaleDateString();
 }
 
 function renderRecentList(id, items, mapper) {
@@ -3946,6 +5064,7 @@ function updateAddressBar() {
   const tab = tabs.find(t => t.id === activeTabId);
   if (tab && urlInput) {
     urlInput.value = tab.url;
+    syncClearUrlButton();
   }
 }
 
@@ -3961,7 +5080,7 @@ let currentTheme = 'system'; // 'light', 'dark', or 'system'
 
 function initTheme() {
   // Load saved theme preference
-  const savedTheme = localStorage.getItem('chromation-theme') || 'system';
+  const savedTheme = localStorage.getItem('chromation-theme') || 'dark';
   applyTheme(savedTheme);
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => {
     if (currentTheme === 'system') applyTheme('system');
@@ -3978,19 +5097,22 @@ function applyVisualPreferences() {
 }
 
 function bindVisualPreferenceControls() {
+  const theme = document.getElementById('ui-theme-select');
   const density = document.getElementById('ui-density-select');
   const reduceMotion = document.getElementById('ui-reduce-motion');
   const lowPerformance = document.getElementById('ui-low-performance');
+  if (theme) theme.value = currentTheme;
   if (density) density.value = localStorage.getItem('chromation-density') || 'comfortable';
   if (reduceMotion) reduceMotion.checked = localStorage.getItem('chromation-reduce-motion') === 'true';
   if (lowPerformance) lowPerformance.checked = localStorage.getItem('chromation-low-performance') === 'true';
+  theme?.addEventListener('change', () => applyTheme(theme.value));
   density?.addEventListener('change', () => { localStorage.setItem('chromation-density', density.value); applyVisualPreferences(); });
   reduceMotion?.addEventListener('change', () => { localStorage.setItem('chromation-reduce-motion', String(reduceMotion.checked)); applyVisualPreferences(); });
   lowPerformance?.addEventListener('change', () => { localStorage.setItem('chromation-low-performance', String(lowPerformance.checked)); applyVisualPreferences(); });
 }
 
 const onboardingSteps = [
-  { icon: '●', title: 'Record a real browser flow', copy: 'Open the site you want to test, choose Record, and interact normally. Chromation captures actions and resilient locator fingerprints.' },
+  { icon: '●', title: 'Record a real browser flow', copy: 'Open the site you want to test, choose Record, and interact normally. OmniFlow QA captures actions and resilient locator fingerprints.' },
   { icon: '▶', title: 'Replay with control', copy: 'Review and edit the timeline, choose the replay engine, then run. Pause, step, retry, and automatic locator healing stay visible throughout execution.' },
   { icon: '▤', title: 'Act on the report', copy: 'Every run produces an actionable report with failures, evidence, healing events, timing, exports, and persistent history.' },
 ];
@@ -4040,6 +5162,14 @@ function applyTheme(theme) {
   } else {
     document.documentElement.setAttribute('data-theme', theme);
   }
+  updateThemeMenuText();
+  const header = document.getElementById('header-theme-toggle');
+  if (header) {
+    header.querySelector('span').textContent = theme === 'light' ? '☀' : theme === 'dark' ? '☾' : '◐';
+    header.querySelector('small').textContent = theme === 'light' ? 'Light' : theme === 'dark' ? 'Dark' : 'System';
+    header.setAttribute('aria-label', `Color theme: ${theme}. Activate to change.`);
+  }
+  const settings = document.getElementById('ui-theme-select'); if (settings) settings.value = theme;
 }
 
 function toggleTheme() {
@@ -4336,7 +5466,7 @@ function renderBrowsingHistoryPanel(entries, query = '') {
 }
 
 function renderBrowsingHistoryGroups(filtered, allEntries) {
-  if (!allEntries.length) return '<div class="history-empty"><span>◷</span><strong>No browsing history yet</strong><p>Pages you visit in Chromation will appear here.</p></div>';
+  if (!allEntries.length) return '<div class="history-empty"><span>◷</span><strong>No browsing history yet</strong><p>Pages you visit in OmniFlow QA will appear here.</p></div>';
   if (!filtered.length) return '<div class="history-empty"><strong>No matching visits</strong><p>Try a different page title, domain, or URL.</p></div>';
   const groups = new Map();
   filtered.forEach((entry) => {
@@ -4410,7 +5540,7 @@ function showLegacyHelp() {
         <p style="font-size: 13px; color: #5f6368; margin-bottom: 12px;">
           For complete documentation, visit our GitHub repository.
         </p>
-        <button class="primary-btn" data-external-url="https://github.com/IamBlackShifu/Chromation-AutoHeal-Browser">
+        <button class="primary-btn" data-external-url="https://github.com/Infinity-Lines-of-Code/omniflow-qa">
           View on GitHub
         </button>
       </div>
@@ -4425,7 +5555,7 @@ const inAppHelpTopics = [
   { title: 'Fix a failed locator', category: 'Healing', keywords: 'selector not found timeout heal confidence', body: 'Open the failed step, inspect its fingerprint fallbacks, review the healing comparison, and promote the recovered locator when it identifies the intended element.' },
   { title: 'Understand reports', category: 'Reports', keywords: 'failure screenshot export pass rate history', body: 'Reports separate run and step pass rates and include failure evidence, healing events, timing, console and network context, and export formats.' },
   { title: 'Keyboard shortcuts', category: 'Reference', keywords: 'keys commands ctrl', body: 'Ctrl+K Commands · Ctrl+Shift+R Recorder · Ctrl+Shift+I Inspector · Ctrl+Shift+S Scraper · Ctrl+Shift+P Reports · Ctrl+H History · Ctrl+Enter Replay · Escape Close.' },
-  { title: 'File uploads', category: 'Actions', keywords: 'upload file chooser device', body: 'Recorded uploads store file metadata. At replay time Chromation validates that the local file still exists before assigning it to the file input.' },
+  { title: 'File uploads', category: 'Actions', keywords: 'upload file chooser device', body: 'Recorded uploads store file metadata. At replay time OmniFlow QA validates that the local file still exists before assigning it to the file input.' },
   { title: 'Variables and environments', category: 'Authoring', keywords: 'test data binding secret base url', body: 'Use {{variableName}} in values, URLs, selectors, and assertions. Store secrets in the encrypted environment vault and non-secret values in environment profiles.' },
   { title: 'How suites work', category: 'Suites', keywords: 'suite organize tests group recording workflow', body: 'A suite groups named copies of recorded tests. Open Suites, create or select a suite, load a recording, name the test, and add the current recording.' },
   { title: 'Run a browser matrix', category: 'Suites', keywords: 'matrix browsers concurrency chrome edge jobs parallel', body: 'Enter comma-separated browsers and a safe concurrency limit. Each test and browser combination becomes a job; start with concurrency 1 or 2 for local diagnosis.' },
@@ -4437,7 +5567,7 @@ function showHelp(initialQuery = '') {
   showBrowseWorkspace();
   panelTitle.textContent = 'Help & Guidance';
   panelContent.innerHTML = `<div class="tool-panel help-center">
-    <div class="help-hero"><p class="eyebrow">CHROMATION GUIDE</p><h3>How can we help?</h3><p>Search workflows, capabilities, and shortcuts.</p><input id="help-search" class="form-input" type="search" value="${escapeReportText(initialQuery)}" placeholder="Search help…"></div>
+    <div class="help-hero"><p class="eyebrow">OMNIFLOW QA GUIDE</p><h3>How can we help?</h3><p>Search workflows, capabilities, and shortcuts.</p><input id="help-search" class="form-input" type="search" value="${escapeReportText(initialQuery)}" placeholder="Search help…"></div>
     <div class="help-quick-actions"><button id="restart-onboarding">Replay onboarding</button><button id="open-diagnostics">Open diagnostics</button><button id="open-suites-help">Open Suites</button><button data-open-tool="recorder">Open Recorder</button></div>
     <div id="help-results">${renderHelpTopics(inAppHelpTopics)}</div>
   </div>`;
@@ -4498,7 +5628,7 @@ function checkForUpdates() {
         <div style="font-size: 48px; margin-bottom: 16px;">🔄</div>
         <h3 style="margin-bottom: 12px; color: #202124;">Version 0.2.0</h3>
         <p style="font-size: 13px; color: #5f6368; margin-bottom: 24px;">
-          You are running the latest version of Chromation AutoHeal Browser.
+          You are running the latest version of OmniFlow QA.
         </p>
         
         <div style="background: #e8f0fe; padding: 16px; border-radius: 8px; text-align: left; margin-bottom: 16px;">
@@ -4512,7 +5642,7 @@ function checkForUpdates() {
           </ul>
         </div>
         
-        <button class="secondary-btn" data-external-url="https://github.com/IamBlackShifu/Chromation-AutoHeal-Browser/releases">
+        <button class="secondary-btn" data-external-url="https://github.com/Infinity-Lines-of-Code/omniflow-qa/releases">
           View Release Notes
         </button>
       </div>
@@ -4525,25 +5655,28 @@ function checkForUpdates() {
   }, 1000);
 }
 
-function showAbout() {
-  statusText.textContent = 'About Chromation AutoHeal Browser';
+async function showAbout() {
+  statusText.textContent = 'About OmniFlow QA';
   
   toggleTool('recorder');
   sidePanel.classList.add('open');
   
   // Create about panel
-  panelTitle.textContent = 'About';
+  panelTitle.textContent = 'About OmniFlow QA';
+  const diagnostics = await ipcRenderer.invoke('get-app-diagnostics');
+  const versions = diagnostics.versions || {};
   panelContent.innerHTML = `
     <div class="panel-section">
       <div style="text-align: center; padding: 16px;">
-        <div style="font-size: 64px; margin-bottom: 16px;">🧪</div>
-        <h2 style="margin-bottom: 8px; color: #202124;">Chromation AutoHeal Browser</h2>
-        <p style="font-size: 16px; color: #1a73e8; margin-bottom: 24px;">Version 0.2.0</p>
+        <img class="about-brand-logo" src="../assets/omniflow-qa-logo.png" alt="OmniFlow QA">
+        <h2 style="margin-bottom: 8px; color: var(--text-primary);">OmniFlow QA</h2>
+        <p style="font-size: 13px; color: var(--accent-color); margin-bottom: 24px;">Unified Web &amp; Mobile QA Automation Studio</p>
+        <div class="about-version-grid"><span>Application<strong>${escapeReportText(versions.app || '0.3.0-beta.1')}</strong></span><span>Electron<strong>${escapeReportText(versions.electron || 'Unavailable')}</strong></span><span>Appium<strong>UiAutomator2 / W3C</strong></span><span>Playwright<strong>1.40+</strong></span></div>
+        <div class="about-owner">Developed &amp; Maintained by <strong>Infinity Lines of Code Pvt Ltd</strong></div>
         
         <div style="background: var(--bg-secondary); padding: 16px; border-radius: 8px; text-align: left; margin-bottom: 16px;">
           <p style="font-size: 13px; color: var(--text-secondary); line-height: 1.8;">
-            A powerful browser automation and testing tool with AI-powered self-healing capabilities. 
-            Built with Electron, TypeScript, and modern web technologies.
+            Enterprise-grade unified Web and Mobile QA automation with live authoring, diagnostics, replay, and resilient auto-healing.
           </p>
         </div>
         
@@ -4560,16 +5693,16 @@ function showAbout() {
         </div>
         
         <div style="margin-top: 24px;">
-          <button class="primary-btn" data-external-url="https://github.com/IamBlackShifu/Chromation-AutoHeal-Browser" style="margin-right: 8px;">
+          <button class="primary-btn" data-external-url="https://github.com/Infinity-Lines-of-Code/omniflow-qa" style="margin-right: 8px;">
             GitHub Repository
           </button>
-          <button class="secondary-btn" data-external-url="https://github.com/IamBlackShifu/Chromation-AutoHeal-Browser/issues">
+          <button class="secondary-btn" data-external-url="https://github.com/Infinity-Lines-of-Code/omniflow-qa/issues">
             Report Issue
           </button>
         </div>
         
         <p style="font-size: 11px; color: #80868b; margin-top: 24px;">
-          © 2026 Chromation Project. MIT License.
+          © 2026 Infinity Lines of Code Pvt Ltd. All rights reserved.
         </p>
       </div>
     </div>
@@ -4580,6 +5713,11 @@ function showAbout() {
 // ===== RECORDING SAVE/LOAD/IMPORT FUNCTIONS =====
 
 function getSuggestedRecordingName(actions = []) {
+  if (activeAutomationWorkspace === 'mobile' || actions.some((action) => action.metadata?.mobileRecording || action.locatorFingerprint?.mobileContext)) {
+    const appId = currentRecordingTarget?.appId || actions.find((action) => action.type === 'launchApp')?.value || 'mobile_app';
+    const appName = String(appId).split('.').filter(Boolean).at(-1) || 'mobile_app';
+    return `${appName} mobile flow`;
+  }
   const navigation = [...actions].reverse().find((action) => action.type === 'navigate' && action.value);
   const rawUrl = navigation?.value || browserWebview?.getURL?.() || urlInput?.value || '';
   try {
@@ -4604,7 +5742,9 @@ function requestRecordingName(suggestedName, heading = 'Name this recording') {
   if (!backdrop || !form || !input) return Promise.resolve(suggestedName);
   title.textContent = heading;
   input.value = suggestedName;
-  context.textContent = `Suggested from ${urlInput?.value || 'the current website'}`;
+  context.textContent = activeAutomationWorkspace === 'mobile'
+    ? `Saved separately for ${currentRecordingTarget?.appId || 'the active mobile application'}`
+    : `Suggested from ${urlInput?.value || 'the current website'}`;
   backdrop.classList.remove('hidden');
   requestAnimationFrame(() => { input.focus(); input.select(); });
   return new Promise((resolve) => {
@@ -4662,10 +5802,12 @@ async function saveRecording() {
   }
   
   try {
-    const result = await ipcRenderer.invoke('save-recording', { name, actions });
+    const result = await ipcRenderer.invoke('save-recording', { name, actions, target: currentRecordingTarget });
     
     if (result.success) {
       currentRecordingFilename = result.filename;
+      workspaceSavedSignatures[activeAutomationWorkspace] = actionSignature(actions);
+      persistWorkspaceDrafts();
       statusText.textContent = `Recording "${name}" saved successfully`;
       // Show notification
       showNotification('✅ Recording saved!', `${actions.length} actions saved to ${result.filename}`);
@@ -4691,10 +5833,15 @@ async function importRecording() {
     if (result.success && result.recording) {
       // Load the imported recording
       if (recorder && result.recording.actions) {
+        const target = result.recording.target || { platform: 'web', mode: 'web' };
+        const requiredWorkspace = workspaceForRecordingTarget(target);
+        if (requiredWorkspace !== activeAutomationWorkspace) await switchAutomationWorkspace(requiredWorkspace);
         const actions = normalizeRecordedActions(result.recording.actions);
         recorder.setActions(actions);
         recordedActions = actions;
+        currentRecordingTarget = target;
         currentRecordingFilename = result.filename || null;
+        workspaceSavedSignatures[requiredWorkspace] = actionSignature(actions);
         updateActionsDisplay();
         statusText.textContent = `Imported recording: ${result.recording.name}`;
         showNotification('✅ Recording imported!', `${result.recording.actions.length} actions loaded`);
@@ -4814,20 +5961,26 @@ async function showSavedRecordings() {
 }
 
 async function loadRecording(filename) {
-  showBrowseWorkspace();
   try {
     const result = await ipcRenderer.invoke('load-recording', filename);
     
     if (result.success && result.recording) {
       if (recorder && result.recording.actions) {
+        const target = result.recording.target || { platform: 'web', mode: 'web' };
+        const requiredWorkspace = workspaceForRecordingTarget(target);
+        if (requiredWorkspace !== activeAutomationWorkspace) await switchAutomationWorkspace(requiredWorkspace);
         const actions = normalizeRecordedActions(result.recording.actions);
         recorder.setActions(actions);
         recordedActions = actions;
+        currentRecordingTarget = target;
         currentRecordingFilename = filename;
+        workspaceSavedSignatures[requiredWorkspace] = actionSignature(actions);
         
-        // Switch to recorder panel
-        sidePanel.classList.remove('open');
-        toggleTool('recorder');
+        if (requiredWorkspace === 'mobile') {
+          showMobilePanel(); sidePanel.classList.add('open'); renderMobileRecordingFeed(actions);
+        } else {
+          showBrowseWorkspace(); sidePanel.classList.remove('open'); toggleTool('recorder');
+        }
         updateActionsDisplay();
         
         statusText.textContent = `Loaded: ${result.recording.name}`;
@@ -5269,16 +6422,28 @@ if (browserWebview) {
 }
 
 // ===== INITIALIZE ON LOAD =====
-document.addEventListener('DOMContentLoaded', () => {
-  console.log('Chromation AutoHeal Browser UI loaded');
+document.addEventListener('DOMContentLoaded', async () => {
+  const rail = document.getElementById('tool-rail');
+  const collapse = document.getElementById('rail-collapse');
+  const setRailCollapsed = (collapsed) => {
+    rail?.classList.toggle('collapsed', collapsed);
+    collapse?.setAttribute('aria-expanded', String(!collapsed));
+    collapse?.setAttribute('title', collapsed ? 'Expand navigation' : 'Collapse navigation');
+    localStorage.setItem('chromation-rail-collapsed', String(collapsed));
+  };
+  collapse?.addEventListener('click', () => setRailCollapsed(!rail.classList.contains('collapsed')));
+  setRailCollapsed(localStorage.getItem('chromation-rail-collapsed') === 'true');
+  console.log('OmniFlow QA UI loaded');
   
   // Initialize theme and Chromation modules
   initTheme();
+  document.getElementById('header-theme-toggle')?.addEventListener('click', toggleTheme);
+  document.getElementById('web-toolbar-inspect')?.addEventListener('click', () => toggleTool('inspector'));
+  document.getElementById('web-toolbar-record')?.addEventListener('click', () => toggleTool('recorder'));
   applyVisualPreferences();
-  initChromation();
+  await initChromation();
   bindOnboarding();
-  showHomeWorkspace();
-  setTimeout(() => openOnboarding(), 700);
+  initializeWorkspaceLauncher();
   window.addEventListener('chromation-remediation', (event) => {
     const { action, stepIndex, query } = event.detail || {};
     if (action === 'inspect-target') { showBrowseWorkspace(); toggleTool('inspector'); return; }
@@ -5352,7 +6517,20 @@ document.addEventListener('DOMContentLoaded', () => {
     if (event.target.id === 'command-palette') closeCommandPalette();
   });
   document.addEventListener('keydown', (event) => {
-    if (event.ctrlKey && event.key.toLowerCase() === 'k') { event.preventDefault(); openCommandPalette(); return; }
+    const commandKey = event.ctrlKey || event.metaKey;
+    const key = event.key.toLowerCase();
+    if (commandKey && event.shiftKey && key === 'm') { event.preventDefault(); switchAutomationWorkspace('mobile'); return; }
+    if (commandKey && event.shiftKey && key === 'w') { event.preventDefault(); switchAutomationWorkspace('web'); return; }
+    if (commandKey && !event.shiftKey && key === 's') { event.preventDefault(); saveRecording(); return; }
+    if (commandKey && !event.shiftKey && key === 'r') {
+      event.preventDefault();
+      if (activeAutomationWorkspace === 'mobile') {
+        if (mobileRecordingState === 'idle') startMobileDeviceRecording(); else toggleMobileDeviceRecordingPause();
+      } else if (isRecording) stopRecording();
+      else { toggleTool('recorder'); document.getElementById('start-record-btn')?.click(); }
+      return;
+    }
+    if (commandKey && key === 'k') { event.preventDefault(); openCommandPalette(); return; }
     if (event.key === 'Escape') { closeCommandPalette(); return; }
     const palette = document.getElementById('command-palette');
     if (!palette?.classList.contains('hidden')) {
@@ -5365,7 +6543,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (event.key === 'Enter' && commands[commandSelection]) { event.preventDefault(); runCommand(phase1Commands.indexOf(commands[commandSelection])); }
       return;
     }
-    if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'b') { event.preventDefault(); showHomeWorkspace(); }
+    if (commandKey && event.shiftKey && key === 'b') { event.preventDefault(); showHomeWorkspace(); }
     if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'i') { event.preventDefault(); toggleTool('inspector'); }
     if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 'r') { event.preventDefault(); toggleTool('recorder'); }
     if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === 's') { event.preventDefault(); toggleTool('scraper'); }
@@ -5411,6 +6589,12 @@ document.addEventListener('DOMContentLoaded', () => {
       ipcRenderer.send('window-maximize');
     });
   }
+  ipcRenderer.on('window-maximized', (maximized) => {
+    maximizeBtn?.classList.toggle('is-maximized', Boolean(maximized));
+    maximizeBtn?.setAttribute('aria-pressed', String(Boolean(maximized)));
+    maximizeBtn?.setAttribute('title', maximized ? 'Restore' : 'Maximize');
+    maximizeBtn?.setAttribute('aria-label', maximized ? 'Restore window' : 'Maximize window');
+  });
   
   if (closeBtn) {
     closeBtn.addEventListener('click', () => {

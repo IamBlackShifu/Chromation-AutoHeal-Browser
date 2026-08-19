@@ -1,29 +1,29 @@
-# Chromation Documentation
+# OmniFlow QA Documentation
 
-## Start here
+Start with [Current Product and Engineering State](CURRENT_STATE.md). It is the
+source of truth for implemented Web Automation, Mobile Automation, UI/UX,
+verification evidence, limitations, and next work.
 
-- [Getting Started](GETTING_STARTED.md)
-- [Quick Reference](QUICK_REFERENCE.md)
-- [Recording Guide](RECORDING_GUIDE.md)
-- [Suites and Automation Workflows](SUITES_AND_WORKFLOWS.md)
-- [Testing and Quality](TESTING.md)
+## Active guides
 
-## Product and engineering
+- [Current state](CURRENT_STATE.md) — comprehensive functional and UX standpoint.
+- [Mission delivery](MISSION_DELIVERY.md) — gap scorecard, milestones, and release gates.
+- [Getting started](GETTING_STARTED.md) — installation and first development use.
+- [Suites and workflows](SUITES_AND_WORKFLOWS.md) — record, organize, run, report.
+- [Android compatibility matrix](ANDROID_COMPATIBILITY_MATRIX.md) — command and
+  device evidence.
+- [Runtime compatibility](COMPATIBILITY.md) — supported toolchain baseline.
+- [Plugin SDK](PLUGIN_SDK.md) — plugin manifest, sandbox, and extension model.
+- [Testing](TESTING.md) — test commands and engineering verification.
 
-- [API Reference](API.md)
-- [Architecture](ARCHITECTURE.md)
-- [Compatibility](COMPATIBILITY.md)
-- [Plugin SDK](PLUGIN_SDK.md)
-- [OhScrapper Integration](OHSCRAPPER_INTEGRATION.md)
-- [OhScrapper Features](OHSCRAPPER_FEATURES.md)
+## Future roadmap
 
-## Status and planning
+- [Future CI/CD and APK execution](FUTURE_CICD_AND_APK_EXECUTION.md) - deferred
+  post-certification roadmap for uploaded builds, pipeline triggers, isolated
+  runners, live monitoring, and result publishing.
 
-- [Current Project Status](PROJECT_STATUS.md)
-- [Beta Release Notes](BETA_RELEASE_NOTES.md)
-- [Roadmap](ROADMAP.md)
-- [Robustness and UX Audit](ROBUSTNESS_UX_AUDIT_CHECKLIST.md)
-- [Mobile Application Automation Plan](MOBILE_AUTOMATION_PLAN.md)
-- [Next Session Handoff](NEXT_SESSION.md)
+## Historical material
 
-Historical design material is retained under [`archive/`](archive/).
+Superseded plans, audits, handoffs, release notes, legacy API/architecture guides,
+and duplicated feature narratives are retained under [archive](archive/README.md).
+They provide history, not current product commitments.

@@ -1,203 +1,73 @@
-# Testing Recording & OhScrapper Features
+# Testing and Verification
 
-## ✅ How to Test Recording
+## Complete deterministic gate
 
-1. **Launch the browser**: `npm start`
+```powershell
+npm.cmd run check
+```
 
-2. **Navigate to a test page**:
-   - Type in address bar: `https://infinitylinesofcode.com`
-   - Or use any form-based website
+This runs ESLint, all Jest suites in-band, TypeScript compilation, and Webpack.
+As of 14 August 2026 the gate passes 35 suites and 183 tests.
 
-3. **Start Recording**:
-   - Click the **Recorder** button (⏺️) or press `Ctrl+Shift+R`
-   - Select recording mode (Auto recommended)
-   - Click **"Start Recording"** button
-   - Status bar should show "⏺️ Recording..."
+The interactive desktop smoke gate is separate:
 
-4. **Perform Actions on the Page**:
-   - **Click** buttons or links
-   - **Type** in input fields
-   - **Select** dropdown options
-   - **Submit** forms
+```powershell
+npm.cmd run test:e2e:electron
+```
 
-5. **Check Actions Panel**:
-   - Each action should appear in the Actions List immediately
-   - You'll see: `#1 click [selector]`, `#2 input [selector]`, etc.
+It launches Electron through Playwright with isolated application data, serves a
+deterministic local fixture, verifies the premium shell and Mobile device picker,
+then browses, records, edits a locator, saves, restarts, reopens through the UI,
+replays with automatic locator healing, verifies the report, and exercises script
+and report exports. It captures a failure screenshot when needed and closes the
+application deterministically.
 
-6. **Stop Recording**:
-   - Click **"Stop Recording"** button
-   - Recording status disappears
+## Useful commands
 
-7. **Export Script**:
-   - Select format (Playwright, Selenium, Cypress, etc.)
-   - Click **"Export Script"**
-   - File downloads automatically
+```powershell
+npm.cmd test -- --runInBand
+npm.cmd test -- --runInBand tests/mobile-phase21.test.ts
+npm.cmd run lint
+npm.cmd run build
+git diff --check
+```
 
-### Expected Result:
-- Actions appear in real-time as you interact
-- Each action shows type, selector, and value
-- Export generates a working test script
+Focused tests are useful during implementation, but a change is not complete until
+the full `check` command passes.
 
----
+## Coverage areas
 
-## ✅ How to Test OhScrapper Discovery
+- Web driver, browser core, recording schema, recorder, replay/executor, healing,
+  reports, history, security, plugins, suites, and matrices.
+- Electron/renderer structural tests for core workflows, mobile UI, premium shell,
+  report workspace, and user guidance.
+- Android Appium client/driver commands, inspection, screenshot authoring, healing,
+  IPC, Phase 1/2 workflows, Phase 2.1 infrastructure, streaming, and exporters.
+- Deterministic two-session port isolation and managed-process cleanup.
 
-1. **Navigate to a page with forms/buttons**:
-   - Example: `https://www.w3schools.com/html/html_forms.asp`
-   - Or: `https://www.wikipedia.org`
-   - Or any page with interactive elements
+## Hardware checks
 
-2. **Open Inspector Panel**:
-   - Click **Inspector** button (🔍) or press `Ctrl+Shift+I`
+Deterministic mocks do not certify USB, emulator, Appium-driver, browser-driver,
+GPU, or operating-system behavior. Record hardware evidence separately.
 
-3. **Method 1: Inspect Single Element**:
-   - Click **"Inspect Single Element"** button
-   - Button changes to "Inspecting... (Click element)"
-   - Click any element on the page (input, button, link)
-   - Element details appear in panel:
-     - Tag, ID, Name, Type, Text
-     - Generated locators with confidence scores
-     - Multiple selector strategies ranked by priority
+Current Android physical evidence is in
+[Android Compatibility Matrix](ANDROID_COMPATIBILITY_MATRIX.md). When validating a
+new device or Appium/UiAutomator2 version, cover at minimum:
 
-4. **Method 2: Discover All Elements** (OhScrapper):
-   - Click **"Discover All Elements"** button
-   - Button shows "Discovering..."
-   - Wait 1-3 seconds
-   - **Discovery Results** section appears showing:
-     - Total count of discovered elements
-     - Table with all elements
-     - Each row shows:
-       - Semantic name (e.g., `page_form_email_input`)
-       - Primary selector
-       - Element type
-       - Confidence score badge
+1. Device discovery and authorization.
+2. Appium session creation with explicit serial.
+3. Hierarchy and screenshot capture.
+4. Stable locator selection and one element action.
+5. Gesture, key, context, and lifecycle paths relevant to the target app.
+6. Evidence/report generation.
+7. Session, instrumentation, forwarded-port, Appium, and scrcpy cleanup.
 
-5. **Export Page Object Model**:
-   - Select framework from dropdown:
-     - **Playwright** (TypeScript)
-     - **Selenium** (JavaScript)
-     - **Cypress** (JavaScript)
-   - Click **"Export POM"** button
-   - File downloads (e.g., `PageObject.ts`)
-   - Open file to see ready-to-use code!
+## Release interpretation
 
-6. **Export JSON Data**:
-   - Click **"Export JSON"** button
-   - Downloads `discovered-elements.json`
-   - Contains all element metadata
+- **Implemented:** code path plus deterministic coverage.
+- **Physically certified:** executed successfully on named hardware/software.
+- **Release certified:** packaged Electron E2E, installer/signing,
+  upgrade/rollback, security, and supported-environment gates also pass.
 
-### Expected Result:
-- Discovers ALL interactive elements
-- Generates semantic names
-- Shows confidence scores
-- Exports working POM code
-- Multiple selector strategies per element
-
----
-
-## 🎯 Good Test Pages
-
-### For Recording:
-- **Google**: https://infinitylinesofcode.com (search form)
-- **TodoMVC**: https://todomvc.com/examples/vanilla-es6/ (interactive app)
-- **Demo Form**: https://www.w3schools.com/html/html_forms.asp
-
-### For Element Discovery:
-- **Wikipedia**: https://www.wikipedia.org (search, links, buttons)
-- **GitHub Login**: https://github.com/login (form fields)
-- **W3Schools Forms**: https://www.w3schools.com/html/html_forms.asp
-- **Any modern web app** with forms and buttons
-
----
-
-## 🔍 What to Look For
-
-### Recording Should Capture:
-- ✅ Clicks on buttons, links
-- ✅ Text input in fields
-- ✅ Dropdown selections
-- ✅ Form submissions
-- ✅ Shows selector used
-- ✅ Shows value entered
-
-### Discovery Should Find:
-- ✅ All `<input>` fields (except hidden)
-- ✅ All `<button>` elements
-- ✅ All `<a>` links with href
-- ✅ `<select>` dropdowns
-- ✅ `<textarea>` elements
-- ✅ Elements with ARIA roles
-
-### Generated Names Should Include:
-- ✅ Page name (from title)
-- ✅ Section (form, nav, header, etc.)
-- ✅ Purpose (from label/placeholder/text)
-- ✅ Element type (btn, input, link, etc.)
-- ✅ Example: `google_search_query_input`
-
-### Selectors Should Prioritize:
-1. ✅ `data-testid` attributes (1.0 confidence)
-2. ✅ Unique IDs (0.95 confidence)
-3. ✅ ARIA labels (0.85 confidence)
-4. ✅ Name attributes (0.75 confidence)
-5. ✅ CSS selectors (0.65 confidence)
-
----
-
-## 🐛 Troubleshooting
-
-### Recording Not Working:
-- **Issue**: No actions appear
-- **Fix**: Refresh the page in the webview after starting recording
-- **Why**: Event listeners need to be injected into fresh page
-
-### Discovery Shows "0 elements":
-- **Issue**: Page has no interactive elements
-- **Fix**: Navigate to a page with forms/buttons
-- **Try**: wikipedia.org, github.com/login, or any form page
-
-### Console Errors About Cache:
-- **Status**: Not critical, safe to ignore
-- **Reason**: Electron cache permission issues
-- **Impact**: None on functionality
-
----
-
-## 📝 Example Workflow
-
-### Complete Test Script Creation:
-1. Navigate to `https://github.com/login`
-2. Click **Inspector** → **"Discover All Elements"**
-3. Wait for discovery (finds ~6-8 elements)
-4. Select "Playwright" framework
-5. Click **"Export POM"**
-6. Download shows `PageObject.ts`
-7. Click **Recorder** → **"Start Recording"**
-8. Type username, password, click login
-9. Click **"Stop Recording"**
-10. Select "Playwright" format
-11. Click **"Export Script"**
-12. Now you have:
-    - **Page Object** with all elements
-    - **Test Script** with recorded actions
-    - Ready to combine and run!
-
----
-
-## 💡 Tips
-
-- **Recording**: Start recording BEFORE interacting with page
-- **Discovery**: Works best on pages with many form elements
-- **Export**: Check confidence scores - higher is better
-- **Names**: Should be readable and descriptive
-- **Selectors**: Primary selector is the most reliable
-
----
-
-**Both features are now fully functional!** 🎉
-
-Try them out and you'll see:
-- Actions recorded in real-time ⏺️
-- Elements discovered automatically 🔍
-- POMs generated instantly 📦
-- Test automation made easy 🚀
+The repository is currently implemented and strongly deterministic; it is not yet
+fully release-certified.

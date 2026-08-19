@@ -1,6 +1,6 @@
-# Contributing to Chromation AutoHeal Browser
+# Contributing to OmniFlow QA
 
-Thank you for your interest in contributing to Chromation AutoHeal Browser! We welcome contributions from the community.
+Thank you for your interest in contributing to OmniFlow QA! We welcome contributions from the community.
 
 ## How to Contribute
 
@@ -37,8 +37,8 @@ We love feature suggestions! Please open an issue with:
 
 ```bash
 # Clone your fork
-git clone https://github.com/YOUR_USERNAME/Chromation-AutoHeal-Browser.git
-cd Chromation-AutoHeal-Browser
+git clone https://github.com/YOUR_USERNAME/omniflow-qa.git
+cd omniflow-qa
 
 # Install dependencies
 npm install
@@ -112,7 +112,7 @@ docs: update API documentation for Reporter
 ## Project Structure
 
 ```
-Chromation-AutoHeal-Browser/
+omniflow-qa/
 ├── src/              # Source code
 │   ├── core/         # Browser core functionality
 │   ├── inspector/    # Element inspection module
@@ -164,8 +164,8 @@ Feel free to open an issue with the `question` label if you need help or clarifi
 
 ## License
 
-By contributing to Chromation AutoHeal Browser, you agree that your contributions will be licensed under the MIT License.
+By contributing to OmniFlow QA, you agree that your contributions will be licensed under the MIT License.
 
 ---
 
-Thank you for contributing to Chromation AutoHeal Browser! 🎉
+Thank you for contributing to OmniFlow QA! 🎉

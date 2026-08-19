@@ -1,5 +1,6 @@
 const { contextBridge, ipcRenderer, shell } = require('electron');
 const ChromationBrowser = require('./dist/index.js').default;
+const { MobileRecordingSession, translatePointerInteraction, mapAndroidInputPoint } = require('./dist/mobile/recording/MobileInteractionRecorder');
 
 const browser = new ChromationBrowser();
 const inspector = browser.getInspector();
@@ -14,6 +15,7 @@ const visual = browser.getVisualRegressionService();
 const generator = browser.getTestGenerator();
 const scheduler = browser.getRunScheduler();
 const plugins = browser.getPluginManager();
+const mobileRecording = new MobileRecordingSession();
 
 const invokeChannels = new Set([
   'choose-upload-files',
@@ -36,10 +38,30 @@ const invokeChannels = new Set([
   'list-environment-variables',
   'set-origin-permission',
   'mobile-connect',
+  'mobile-appium-start',
+  'mobile-appium-status',
+  'mobile-appium-stop',
+  'mobile-scrcpy-start',
+  'mobile-scrcpy-status',
+  'mobile-scrcpy-stop',
+  'mobile-doctor',
+  'mobile-list-devices',
+  'mobile-preflight',
+  'mobile-load-profiles',
+  'mobile-save-profile',
+  'mobile-delete-profile',
   'mobile-status',
+  'mobile-touch-capture-start',
+  'mobile-touch-capture-stop',
+  'mobile-touch-capture-status',
   'mobile-inspect',
   'mobile-action',
+  'mobile-replay',
+  'mobile-cancel-replay',
+  'mobile-replay-status',
   'mobile-disconnect',
+  'workspace-teardown',
+  'mobile-workspace-readiness',
 ]);
 const sendChannels = new Set(['window-minimize', 'window-maximize', 'window-close']);
 const receiveChannels = new Set([
@@ -48,11 +70,15 @@ const receiveChannels = new Set([
   'toggle-scraper',
   'toggle-healing',
   'show-about',
+  'window-maximized',
+  'mobile-native-touch',
+  'mobile-native-key',
+  'mobile-touch-capture-error',
 ]);
 const externalURLs = new Set([
-  'https://github.com/IamBlackShifu/Chromation-AutoHeal-Browser',
-  'https://github.com/IamBlackShifu/Chromation-AutoHeal-Browser/releases',
-  'https://github.com/IamBlackShifu/Chromation-AutoHeal-Browser/issues',
+  'https://github.com/Infinity-Lines-of-Code/omniflow-qa',
+  'https://github.com/Infinity-Lines-of-Code/omniflow-qa/releases',
+  'https://github.com/Infinity-Lines-of-Code/omniflow-qa/issues',
 ]);
 
 contextBridge.exposeInMainWorld('chromationAPI', {
@@ -85,6 +111,22 @@ contextBridge.exposeInMainWorld('chromationAPI', {
     exportScript: (format) => recorder.exportScript(format),
     clear: () => recorder.clearActions(),
   },
+  mobileRecording: {
+    start: (appId) => mobileRecording.start(String(appId || '')),
+    pause: () => mobileRecording.pause(),
+    resume: () => mobileRecording.resume(),
+    stop: () => mobileRecording.stop(),
+    getState: () => mobileRecording.getState(),
+    getElapsedMs: () => mobileRecording.getElapsedMs(),
+    getActions: () => mobileRecording.getActions(),
+    remove: (id) => mobileRecording.remove(String(id || '')),
+    duplicate: (id) => mobileRecording.duplicate(String(id || '')),
+    move: (id, toIndex) => mobileRecording.move(String(id || ''), Number(toIndex)),
+    translate: (sample, context) => translatePointerInteraction(sample, context),
+    mapAndroidInputPoint: (point, calibration, display) => mapAndroidInputPoint(point, calibration, display),
+    append: (action) => mobileRecording.append(action),
+    capture: (sample, context) => mobileRecording.capture(sample, context),
+  },
   healing: {
     enable: () => healing.enable(),
     disable: () => healing.disable(),
@@ -111,6 +153,7 @@ contextBridge.exposeInMainWorld('chromationAPI', {
     exportHistory: () => reporter.exportHistory(),
     importHistory: (value) => reporter.importHistory(value),
     recordReport: (report) => reporter.recordReport(report),
+    fromExecutionResult: (testName, execution) => reporter.fromExecutionResult(testName, execution),
   },
   project: {
     setVariable: (name, value) => project.setVariable(name, value),

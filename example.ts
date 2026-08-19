@@ -1,5 +1,5 @@
 /**
- * Chromation AutoHeal Browser - Example Usage
+ * OmniFlow QA - Example Usage
  * 
  * This file demonstrates the main features and usage patterns
  */
@@ -8,7 +8,7 @@ import ChromationBrowser from './src/index';
 
 async function demonstrateFeatures() {
   console.log('='.repeat(60));
-  console.log('Chromation AutoHeal Browser - Feature Demonstration');
+  console.log('OmniFlow QA - Feature Demonstration');
   console.log('='.repeat(60));
   console.log();
 

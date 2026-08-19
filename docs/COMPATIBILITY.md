@@ -1,22 +1,29 @@
-# Compatibility
+# Runtime Compatibility
 
-The following versions define the supported development and execution baseline
-for Chromation 0.2.x.
+Last verified: 14 August 2026
 
-| Component | Supported baseline |
+| Component | Current supported baseline |
 | --- | --- |
-| Node.js | 20.x and 22.x |
+| Desktop OS | Windows 10/11 primary target |
+| Node.js | 20.x or 22.x |
 | npm | 10.x |
 | Electron | 40.x |
-| Embedded browser | The Chromium version bundled with the supported Electron 40.x release |
-| Playwright executor | `playwright-core` 1.58.x |
-| External Chrome | Current stable Chrome through Playwright's `chrome` channel |
-| Operating systems | Windows 10/11 are the primary desktop target; Linux is used for CI unit/build verification |
+| Embedded browser | Chromium bundled with Electron 40.x |
+| Web execution | Embedded webview and installed `playwright-core` |
+| External browsers | Installed Chrome/Edge channels supported by Playwright |
+| Android transport | Appium 3.x and UiAutomator2 |
+| Android tooling | ADB/platform-tools 36 validated; compatible recent versions expected |
+| Android physical evidence | Android 14/API 34 CUBOT KINGKONG_ES |
+| Device mirror | scrcpy 4.1 physically verified; MJPEG/screenshot fallback |
+| Optional decoding tooling | FFmpeg Essentials 8.1.1 installed on certification host |
+| iOS | Not implemented |
 
-Exact dependency versions are recorded in `package-lock.json`. A dependency
-upgrade is supported only after `npm run check` and the Electron workflow tests
-pass against it.
+Exact JavaScript dependency versions are recorded in `package-lock.json`. A
+dependency, Electron, Appium, driver, SDK, or device-OS upgrade is supported only
+after `npm.cmd run check` and relevant physical smoke tests pass.
 
-The embedded Electron webview and the separate Playwright executor are different
-browser processes. A recording must pass on both engines before behavior is
-described as engine-independent.
+The embedded Electron webview and Playwright executor are separate browser
+processes. Recordings are engine-independent only after they pass on both.
+
+Remote Appium hosts are intentionally rejected until host trust, transport
+security, and secret handling are explicitly implemented.

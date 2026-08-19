@@ -1,8 +1,8 @@
 # Suites and Automation Workflows
 
-## The Chromation workflow
+## The OmniFlow QA workflow
 
-Chromation uses four connected layers:
+OmniFlow QA uses four connected layers:
 
 1. **Recording** — an ordered set of browser actions and assertions.
 2. **Test case** — a named copy of a recording added to a suite, with its own tags.

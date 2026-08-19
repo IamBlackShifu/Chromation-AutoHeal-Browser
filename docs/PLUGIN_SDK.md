@@ -1,6 +1,6 @@
-# Chromation Plugin SDK
+# OmniFlow QA Plugin SDK
 
-Chromation plugins are sandboxed JavaScript bundles with a validated manifest.
+OmniFlow QA plugins are sandboxed JavaScript bundles with a validated manifest.
 Plugins cannot access Node.js `process`, `require`, the filesystem, or the
 network unless a future capability explicitly provides that access.
 

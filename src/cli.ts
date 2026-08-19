@@ -19,7 +19,7 @@ export function parseCliArguments(argv: string[]): CliOptions {
     return index >= 0 ? argv[index + 1] ?? fallback : fallback;
   };
   const suiteFile = value('--suite');
-  if (!suiteFile) throw new Error('Usage: chromation-cli --suite <suite.json> [--tags smoke] [--matrix \'{"browser":["chrome"]}\']');
+  if (!suiteFile) throw new Error('Usage: omniflow-qa --suite <suite.json> [--tags smoke] [--matrix \'{"browser":["chrome"]}\']');
   const matrixText = value('--matrix', '{}');
   const matrix = parseMatrix(matrixText);
   if (!Object.values(matrix).every((values) => Array.isArray(values) && values.length)) {
@@ -27,7 +27,7 @@ export function parseCliArguments(argv: string[]): CliOptions {
   }
   return {
     suiteFile: path.resolve(suiteFile),
-    resultDirectory: path.resolve(value('--results', './chromation-results')),
+    resultDirectory: path.resolve(value('--results', './omniflow-results')),
     tags: value('--tags').split(',').map((item) => item.trim()).filter(Boolean),
     excludeTags: value('--exclude-tags').split(',').map((item) => item.trim()).filter(Boolean),
     matrix,

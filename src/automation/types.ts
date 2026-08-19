@@ -9,6 +9,7 @@ export interface AutomationTarget {
   mode: ApplicationMode;
   name?: string;
   appId?: string;
+  appActivity?: string;
   deviceProfile?: string;
 }
 
@@ -78,4 +79,3 @@ export const DEFAULT_WEB_TARGET: AutomationTarget = Object.freeze({
   platform: 'web',
   mode: 'web',
 });
-

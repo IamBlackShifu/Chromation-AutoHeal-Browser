@@ -16,7 +16,8 @@ describe('Phase 1 UI modernization', () => {
 
   test('provides command search, workspace health, and live badges', () => {
     expect(html).toContain('id="command-palette"');
-    expect(renderer).toContain("event.key.toLowerCase() === 'k'");
+    expect(renderer).toContain("const key = event.key.toLowerCase()");
+    expect(renderer).toContain("commandKey && key === 'k'");
     expect(renderer).toContain('getFilteredCommands');
     for (const id of ['home-health-score', 'home-recent-recordings', 'home-recent-runs', 'rail-recording-badge', 'rail-action-count', 'rail-failure-count', 'rail-healing-count']) {
       expect(html).toContain(`id="${id}"`);

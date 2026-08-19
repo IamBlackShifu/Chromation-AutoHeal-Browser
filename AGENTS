@@ -1,4 +1,4 @@
-# Chromation AutoHeal Browser — Build Prompt
+# OmniFlow QA — Build Prompt
 
 **Tagline:** *Browse. Inspect. Automate. Heal.*
 
@@ -6,7 +6,7 @@
 
 ## 1. Project Overview
 
-Chromation AutoHeal Browser is a Chromium-engine–based automation browser purpose-built for QA Engineers, SDETs, and Automation Developers.
+OmniFlow QA is a Chromium-engine–based automation browser purpose-built for QA Engineers, SDETs, and Automation Developers.
 
 The browser must combine traditional browsing with deeply embedded automation tooling, enabling users to:
 
@@ -350,7 +350,7 @@ Planned AI capabilities:
 
 ## 12. Success Definition
 
-Chromation AutoHeal Browser succeeds when:
+OmniFlow QA succeeds when:
 
 * Tests can be recorded without coding
 * Locators rarely break

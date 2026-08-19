@@ -9,3 +9,5 @@ build/
 coverage/
 *.tsbuildinfo
 chromation-results/
+omniflow-results/
+release/
