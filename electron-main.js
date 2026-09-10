@@ -39,6 +39,7 @@ let mobileDriver = null;
 let mobileReplayDriver = null;
 let mobileTouchCapture = null;
 let mobileTouchCaptureStatus = { state: 'idle', bytes: 0, chunks: 0, touches: 0, keys: 0, error: null };
+let shutdownPromise = null;
 const appiumProcessManager = new AppiumProcessManager();
 const scrcpyProcessManager = new ScrcpyProcessManager();
 const androidDeviceDiscovery = new AndroidDeviceDiscovery();
@@ -235,7 +236,7 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
-    app.quit();
+    void shutdownApplication();
   }
 });
 
@@ -257,10 +258,29 @@ ipcMain.on('export-script', (event, format) => {
   console.log('Exporting script in format:', format);
 });
 
-app.on('before-quit', () => {
+async function shutdownApplication() {
+  if (shutdownPromise) return shutdownPromise;
+  shutdownPromise = (async () => {
+    mobileTouchCapture?.kill();
+    mobileTouchCapture = null;
+    await Promise.allSettled([
+      appiumProcessManager.stopAll(),
+      scrcpyProcessManager.stopAll(),
+    ]);
+    app.exit(0);
+  })();
+  return shutdownPromise;
+}
+
+app.on('before-quit', (event) => {
+  if (shutdownPromise) return;
+  event.preventDefault();
+  void shutdownApplication();
+});
+
+app.on('will-quit', () => {
   mobileTouchCapture?.kill();
-  void appiumProcessManager.stopAll();
-  void scrcpyProcessManager.stopAll();
+  mobileTouchCapture = null;
 });
 
 function configureGuestPermissions() {
@@ -275,10 +295,25 @@ function configureGuestPermissions() {
       const origin = details.requestingUrl
         ? new URL(details.requestingUrl).origin
         : new URL(contents.getURL()).origin;
-      callback(isAllowed(origin, permission));
+      const allowed = isAllowed(origin, permission);
+      callback(allowed);
+      mainWindow?.webContents.send('guest-permission-result', { origin, permission, allowed });
     } catch {
       callback(false);
+      mainWindow?.webContents.send('guest-permission-result', { origin: 'unknown', permission, allowed: false });
     }
+  });
+  guestSession.on('will-download', (event, item) => {
+    const url = item.getURL();
+    let filename = item.getFilename();
+    if (!filename) {
+      try { filename = path.basename(new URL(url).pathname); } catch { filename = ''; }
+    }
+    event.preventDefault();
+    mainWindow?.webContents.send('guest-download-blocked', {
+      filename: path.basename(filename || 'download'),
+      url,
+    });
   });
 }
 
@@ -298,7 +333,10 @@ app.on('web-contents-created', (_event, contents) => {
     webPreferences.sandbox = true;
   });
   if (contents.getType() === 'webview') {
-    contents.setWindowOpenHandler(() => ({ action: 'deny' }));
+    contents.setWindowOpenHandler(({ url }) => {
+      mainWindow?.webContents.send('guest-popup-blocked', { url });
+      return { action: 'deny' };
+    });
   }
 });
 

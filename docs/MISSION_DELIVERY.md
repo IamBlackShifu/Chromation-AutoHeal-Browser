@@ -1,6 +1,6 @@
 # OmniFlow QA Mission Delivery Program
 
-Last reviewed: 14 August 2026
+Last reviewed: 10 September 2026
 
 This program maps the premium QA automation mission to evidence in the current
 repository. Status meanings:
@@ -28,9 +28,9 @@ repository. Status meanings:
 | Suites/matrices/CLI | Implemented foundation | Tags, suites, browser matrices, concurrency, CLI | Mobile/cloud matrix UI integration and CI examples |
 | Reports/diagnostics | Implemented foundation | HTML/JSON/JUnit/HAR/Allure/PDF paths, evidence, logs, trends | Shareable artifact packaging and broader redaction acceptance suite |
 | PII redaction | Partial | Text/URL/DOM secret redaction and selector-based screenshot masks | Automatic sensitive-region discovery for web/mobile screenshots and logs |
-| Automated unit/integration gate | Implemented | `npm run check`, 35 suites/183 tests | Maintain as blocking CI |
-| Electron workflow E2E | Partial | Playwright launches Electron with isolated data and a local fixture; browse -> record -> edit -> save -> restart -> UI reopen -> replay -> heal -> report -> script/report export passes | Add inspector authoring, failure/recovery paths, and run the journey against packaged artifacts in Windows CI |
-| Signed distribution | Missing/external | Development Electron launch only | Windows/macOS/Linux packaging, signing credentials, notarization, updates/rollback |
+| Automated unit/integration gate | Implemented | `npm run check`, 41 suites/221 tests | Maintain as blocking CI |
+| Electron workflow E2E | Partial | Development and locally packaged Windows runs pass browse -> inspect/author locators -> record -> edit -> save -> restart -> reopen -> replay -> heal -> report/export, plus unrecoverable-selector evidence, UI remediation, passing recovery, blocked popup/download handling, unexpected-navigation return, renderer-crash recovery, and permission denial | Obtain a clean hosted Windows result, then broaden origin, storage, and real-world browser-boundary variants |
+| Signed distribution | Partial/external | Reproducible unsigned Windows NSIS setup, end-user dependency guide, checksum, and beta.2 GitHub prerelease | Signing credentials, macOS/Linux artifacts, notarization, updates, and rollback certification |
 
 ## Delivery order
 
@@ -63,7 +63,8 @@ manual intervention.
    capabilities, hierarchy, and reports.
 2. Automatically mask sensitive web elements and configurable mobile bounds.
 3. Add atomic persistence, quotas, retention, corruption recovery, and privacy mode.
-4. Complete navigation, popup, download, crash, and permission policies.
+4. Broaden navigation, popup, download, crash, permission, and storage policies
+   beyond the deterministic packaged fixtures.
 
 Exit: security and privacy acceptance suite passes on packaged builds.
 

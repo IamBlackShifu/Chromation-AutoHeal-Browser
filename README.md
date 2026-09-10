@@ -202,7 +202,7 @@ npm.cmd run check
 npm.cmd start
 ```
 
-The current deterministic gate passes 35 Jest suites and 183 tests, ESLint,
+The current deterministic gate passes 41 Jest suites and 221 tests, ESLint,
 TypeScript, and Webpack. Android execution additionally requires ADB, Java,
 Appium, UiAutomator2, and an authorized device or emulator. The in-app Setup
 Doctor reports missing dependencies.

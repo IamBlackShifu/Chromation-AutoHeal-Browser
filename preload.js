@@ -74,6 +74,9 @@ const receiveChannels = new Set([
   'mobile-native-touch',
   'mobile-native-key',
   'mobile-touch-capture-error',
+  'guest-popup-blocked',
+  'guest-download-blocked',
+  'guest-permission-result',
 ]);
 const externalURLs = new Set([
   'https://github.com/Infinity-Lines-of-Code/omniflow-qa',

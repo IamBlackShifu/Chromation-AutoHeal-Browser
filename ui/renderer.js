@@ -287,6 +287,39 @@ const loadingIndicator = document.getElementById('loading-indicator');
 const statusText = document.getElementById('status-text');
 const healingStatus = document.getElementById('healing-status');
 const recordingStatus = document.getElementById('recording-status');
+const browserRecovery = document.getElementById('browser-recovery');
+const browserRecoveryTitle = document.getElementById('browser-recovery-title');
+const browserRecoveryDetail = document.getElementById('browser-recovery-detail');
+const browserRecoveryReturn = document.getElementById('browser-recovery-return');
+const browserRecoveryDismiss = document.getElementById('browser-recovery-dismiss');
+let lastStableWebUrl = 'about:blank';
+let expectedWebNavigationUrl = null;
+let browserRecoveryTarget = null;
+let navigationNeedsRecovery = false;
+
+function hideBrowserRecovery() {
+  browserRecovery?.classList.add('hidden');
+  browserRecovery?.removeAttribute('data-recovery-kind');
+  browserRecoveryTarget = null;
+}
+
+function showBrowserRecovery(kind, title, detail, targetUrl = null) {
+  browserRecoveryTarget = targetUrl;
+  browserRecovery.dataset.recoveryKind = kind;
+  browserRecoveryTitle.textContent = title;
+  browserRecoveryDetail.textContent = detail;
+  browserRecoveryReturn.classList.toggle('hidden', !targetUrl);
+  browserRecovery.classList.remove('hidden');
+  statusText.textContent = title;
+}
+
+browserRecoveryDismiss?.addEventListener('click', hideBrowserRecovery);
+browserRecoveryReturn?.addEventListener('click', () => {
+  const target = browserRecoveryTarget;
+  navigationNeedsRecovery = false;
+  hideBrowserRecovery();
+  if (target) navigateToUrl(target);
+});
 
 // Navigation buttons
 const btnBack = document.getElementById('btn-back');
@@ -382,9 +415,13 @@ function navigateToUrl(url) {
       url = 'https://duckduckgo.com/?q=' + encodeURIComponent(url);
     }
   }
+
+  showBrowseWorkspace();
   
   loadingIndicator.classList.add('active');
   statusText.textContent = 'Loading...';
+  expectedWebNavigationUrl = url;
+  navigationNeedsRecovery = false;
   browserWebview.src = url;
   urlInput.value = url;
   syncClearUrlButton();
@@ -431,11 +468,47 @@ browserWebview.addEventListener('did-stop-loading', () => {
   urlInput.value = browserWebview.src;
 });
 
+browserWebview.addEventListener('did-navigate', (event) => {
+  const target = event.url;
+  if (!/^https?:/i.test(target || '')) return;
+  if (expectedWebNavigationUrl && target === expectedWebNavigationUrl) {
+    expectedWebNavigationUrl = null;
+    lastStableWebUrl = target;
+    hideBrowserRecovery();
+    return;
+  }
+  if (lastStableWebUrl === 'about:blank') {
+    lastStableWebUrl = target;
+    return;
+  }
+  if (target !== lastStableWebUrl) {
+    navigationNeedsRecovery = true;
+    showBrowserRecovery('navigation', 'Unexpected navigation detected', `The page navigated to ${target}`, lastStableWebUrl);
+  }
+});
+
 browserWebview.addEventListener('did-fail-load', (e) => {
   if (e.errorCode !== -3) { // Ignore aborted loads
     loadingIndicator.classList.remove('active');
     statusText.textContent = 'Failed to load page';
+    showBrowserRecovery('load', 'Page failed to load', e.errorDescription || e.validatedURL || 'The destination could not be loaded.', lastStableWebUrl);
   }
+});
+
+browserWebview.addEventListener('render-process-gone', (event) => {
+  const reason = event.details?.reason || 'unknown reason';
+  showBrowserRecovery('crash', 'Page renderer stopped', `The page process ended: ${reason}. Your recording is preserved.`, lastStableWebUrl);
+});
+
+ipcRenderer.on('guest-popup-blocked', (_event, payload) => {
+  showBrowserRecovery('popup', 'Popup blocked', payload?.url || 'The page tried to open another window.');
+});
+ipcRenderer.on('guest-download-blocked', (_event, payload) => {
+  showBrowserRecovery('download', 'Download blocked', `${payload?.filename || 'A file'} was not saved automatically.`);
+});
+ipcRenderer.on('guest-permission-result', (_event, payload) => {
+  if (payload?.allowed) return;
+  showBrowserRecovery('permission', 'Permission denied', `${payload?.permission || 'The requested capability'} is not allowed for ${payload?.origin || 'this origin'}.`);
 });
 
 // Navigation controls
@@ -561,6 +634,20 @@ async function startInspection() {
   const startInspectBtn = document.getElementById('start-inspect-btn');
   startInspectBtn.textContent = 'Inspecting... (Click element)';
   startInspectBtn.disabled = true;
+
+  const inspectListener = (e) => {
+    if (e.message.startsWith('CHROMATION_INSPECT:')) {
+      const elementData = JSON.parse(e.message.replace('CHROMATION_INSPECT:', ''));
+      displayElementInfo(elementData);
+      startInspectBtn.textContent = 'Inspect Single Element';
+      startInspectBtn.disabled = false;
+      isInspecting = false;
+      inspector.stopInspection();
+      statusText.textContent = 'Ready';
+      browserWebview.removeEventListener('console-message', inspectListener);
+    }
+  };
+  browserWebview.addEventListener('console-message', inspectListener);
   
   // Inject inspection script into webview
   try {
@@ -572,8 +659,14 @@ async function startInspection() {
           const element = e.target;
           
           // Get element info
+          const attributes = {};
+          for (const attribute of element.attributes) {
+            attributes[attribute.name] = attribute.value;
+          }
           const info = {
             tag: element.tagName,
+            tagName: element.tagName.toLowerCase(),
+            attributes,
             id: element.id,
             className: element.className,
             name: element.name || '',
@@ -590,23 +683,14 @@ async function startInspection() {
       })();
     `);
     
-    // Listen for inspection result
-    const inspectListener = (e) => {
-      if (e.message.startsWith('CHROMATION_INSPECT:')) {
-        const elementData = JSON.parse(e.message.replace('CHROMATION_INSPECT:', ''));
-        displayElementInfo(elementData);
-        startInspectBtn.textContent = 'Inspect Single Element';
-        startInspectBtn.disabled = false;
-        isInspecting = false;
-        inspector.stopInspection();
-        statusText.textContent = 'Ready';
-        browserWebview.removeEventListener('console-message', inspectListener);
-      }
-    };
-    
-    browserWebview.addEventListener('console-message', inspectListener);
   } catch (error) {
     console.error('Failed to inject inspection script:', error);
+    browserWebview.removeEventListener('console-message', inspectListener);
+    startInspectBtn.textContent = 'Inspect Single Element';
+    startInspectBtn.disabled = false;
+    isInspecting = false;
+    inspector.stopInspection();
+    statusText.textContent = 'Inspection failed - check console';
   }
 }
 
@@ -3745,6 +3829,7 @@ async function replayActions(speed = 1.0, engine = 'webview', policy = { timeout
             error: error.message,
             duration: Date.now() - stepStartedAt,
             screenshot,
+            screenshotError: screenshot ? null : 'Webview screenshot capture returned no image',
           };
           replayReport.failed.push(stepResult);
         }
@@ -4245,11 +4330,22 @@ async function captureWebviewScreenshotBase64() {
     }
 
     const image = await browserWebview.capturePage();
-    if (!image || typeof image.toPNG !== 'function') {
+    if (!image) {
       return null;
     }
-
-    return image.toPNG().toString('base64');
+    if (typeof image.toDataURL === 'function') {
+      return image.toDataURL();
+    }
+    if (typeof image.toPNG !== 'function') {
+      return null;
+    }
+    const bytes = image.toPNG();
+    if (!bytes?.length) return null;
+    let binary = '';
+    for (let index = 0; index < bytes.length; index += 0x8000) {
+      binary += String.fromCharCode(...bytes.slice(index, index + 0x8000));
+    }
+    return btoa(binary);
   } catch (error) {
     console.warn('Failed to capture webview screenshot:', error);
     return null;
@@ -6296,7 +6392,9 @@ function buildReplayReportViewModel() {
     retries: item.retries || 0,
     error: item.error || null,
     healing: item.healing || null,
-    evidence: item.screenshot ? { screenshotBase64: item.screenshot } : undefined,
+    evidence: item.screenshot || item.screenshotError
+      ? { screenshotBase64: item.screenshot || undefined, screenshotError: item.screenshotError || undefined }
+      : undefined,
   }));
   const steps = (lastReplayExecution?.steps || fallbackSteps)
     .slice()

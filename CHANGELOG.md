@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Improved
 
+- Packaged Electron certification now exercises Inspector authoring, explicit
+  failure evidence, UI-led remediation, and a passing recovery run
+- Browser recovery guidance now covers blocked popups and downloads, unexpected
+  navigation, renderer crashes, and denied permissions without losing recordings
+- Windows CI now builds the installer and runs the canonical journey against the
+  packaged executable while retaining installation and failure artifacts
 - Legacy mobile recording detection and schema migration
 - Restoration of saved Android application, activity, device, automation, and
   Appium endpoint settings

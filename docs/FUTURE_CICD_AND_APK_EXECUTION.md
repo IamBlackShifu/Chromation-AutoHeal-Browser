@@ -15,6 +15,12 @@ capture the supported action set without missing or duplicating interactions and
 replay successfully on the supported device/API matrix. Recording and replay
 defects remain the higher priority until that gate is met.
 
+As of `0.3.0-beta.2`, the active CI/CD work is limited to product quality gates:
+Windows CI builds the desktop installer and runs the canonical web workflow
+against the packaged executable. APK submission, remote coordination, runner
+registration, and provider callbacks described below remain deferred until the
+Android quality gate is satisfied.
+
 ## Product objective
 
 Allow teams to submit an APK and an OmniFlow QA mobile suite from the desktop,
@@ -140,4 +146,3 @@ A local-only deployment may run the CLI directly inside the pipeline.
   directory, credentials, or timeline state.
 - Interrupted jobs recover or terminate deterministically and release all owned
   resources.
-

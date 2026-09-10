@@ -1,7 +1,9 @@
 # OmniFlow QA Current Product and Engineering State
 
-Last verified: 14 August 2026  
-Version: `0.3.0-beta.1`  
+Last verified: 10 September 2026
+
+Version: `0.3.0-beta.2`
+
 Primary desktop target: Windows 10/11
 
 This document is the source of truth for what OmniFlow QA currently does, how the
@@ -34,8 +36,8 @@ may describe mobile recording as complete until repeatable five-screen journeys
 capture every supported user action and replay them successfully across the
 supported device matrix.
 
-The repository passes its complete automated gate: ESLint, 34 Jest suites with
-183 tests, TypeScript compilation, and Webpack. A Playwright Electron smoke also
+The repository passes its complete automated gate: ESLint, 41 Jest suites with
+221 tests, TypeScript compilation, and Webpack. A Playwright Electron smoke also
 certifies shell startup plus Mobile and Recorder drawer access. This is not a
 substitute for signed-release testing or the full record-to-report E2E matrix.
 
@@ -159,10 +161,18 @@ substitute for signed-release testing or the full record-to-report E2E matrix.
 
 ### Web limitations and remaining hardening
 
-- A packaged Electron record-to-report E2E suite against controlled fixture apps
-  is still required for release certification.
-- Popup/new-window, downloads, renderer crashes, unexpected navigation, and some
-  permission/storage failure policies need broader packaged-app testing.
+- The record-to-report Electron E2E harness now supports both development and
+  packaged Windows executables. Windows CI builds the NSIS installer, runs the
+  canonical journey against `win-unpacked`, and retains the installer and failure
+  screenshot. Local packaged certification now covers Inspector authoring, stable
+  locator ranking, an unrecoverable selector, actionable failure evidence, UI-led
+  correction, and a passing recovery run. It also covers blocked popups and
+  downloads, unexpected navigation with return-to-stable-page recovery, renderer
+  crashes, and permission denial without losing the recording. A clean hosted
+  GitHub Actions result remains the CI certification gate.
+- The controlled popup, download, renderer-crash, unexpected-navigation, and
+  permission-denial fixtures pass in the packaged app. Broader real-world origin,
+  storage, and provider variants still need acceptance coverage.
 - Cross-origin iframe and closed Shadow DOM behavior must remain explicit; these
   browser security boundaries cannot be treated as universally inspectable.
 - Engine parity is capability-dependent. A recording is only engine-independent
@@ -303,7 +313,8 @@ substitute for signed-release testing or the full record-to-report E2E matrix.
   notification content.
 - Formal per-origin permissions, storage quotas, retention, corruption recovery,
   and privacy-mode acceptance tests.
-- Signed installers, upgrade/rollback verification, and dependency/security CI.
+- The unsigned Windows NSIS installer is available. Code signing,
+  upgrade/rollback verification, and dependency/security CI remain outstanding.
 
 ## Architecture at a glance
 
@@ -340,7 +351,7 @@ Run the complete deterministic gate with:
 npm.cmd run check
 ```
 
-Current result: 35 suites and 183 tests, plus lint and production build. The test
+Current result: 41 suites and 221 tests, plus lint and production build. The test
 count may grow; a green `npm run check` is the operative requirement.
 
 “Implemented” means the code path and deterministic coverage exist. “Physically
@@ -350,9 +361,9 @@ performance, and supported-environment acceptance gates.
 
 ## Recommended next work
 
-1. Run the existing web record/edit/save/restart/replay/heal/report/export journey
-   against packaged Electron artifacts and add inspector and failure/recovery
-   coverage.
+1. Obtain a clean hosted Windows CI pass for the expanded packaged recovery
+   journey, then begin U3 automatic sensitive-region masking, atomic persistence,
+   quotas, retention, and corruption recovery.
 2. Attach a second Android target and publish the physical concurrent replay result.
 3. Decompose renderer/styles and move remaining IPC payloads to typed contracts.
 4. Complete evidence redaction, origin permissions, retention, and corruption

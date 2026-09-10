@@ -241,6 +241,10 @@
         </section>
       <!-- Browser View (webview) -->
       <div class="browser-view hidden" id="browser-view">
+        <div class="browser-recovery hidden" id="browser-recovery" role="status" aria-live="assertive">
+          <div><strong id="browser-recovery-title">Browser action needs attention</strong><span id="browser-recovery-detail"></span></div>
+          <div><button id="browser-recovery-return" class="secondary-btn">Return to last page</button><button id="browser-recovery-dismiss" aria-label="Dismiss browser notice">×</button></div>
+        </div>
         <webview 
           id="browser-webview" 
           src="about:blank"
