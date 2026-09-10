@@ -5,6 +5,30 @@ All notable changes to OmniFlow QA will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0-beta.2] - 2026-09-10
+
+### Added
+
+- Explicit Web and Android/Appium identities for saved and recent recordings
+- Hierarchy-based locator choices for captured Android taps and long presses
+- Android replay readiness checks and confirmation before device control
+- Assisted Windows installer with desktop and Start menu shortcuts
+- Windows installation guide with optional Android dependency download links
+
+### Improved
+
+- Legacy mobile recording detection and schema migration
+- Restoration of saved Android application, activity, device, automation, and
+  Appium endpoint settings
+- Replay routing safeguards that prevent mobile recordings from entering web replay
+- Setup Doctor guidance for Appium 3 and UiAutomator2 installation order
+
+### Known limitations
+
+- Physical Android interaction capture remains experimental.
+- iOS automation is not implemented.
+- Windows binaries are not code-signed and may trigger a SmartScreen warning.
+
 ## [0.3.0-beta.1] - 2026-07-30
 
 ### Added

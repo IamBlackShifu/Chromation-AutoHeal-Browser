@@ -11,6 +11,9 @@ export interface AutomationTarget {
   appId?: string;
   appActivity?: string;
   deviceProfile?: string;
+  deviceUdid?: string;
+  automationName?: string;
+  serverUrl?: string;
 }
 
 export interface CapabilityDescriptor {

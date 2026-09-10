@@ -47,6 +47,9 @@ describe('RecordingSchema', () => {
       mode: 'native',
       appId: 'org.example.app',
       deviceProfile: 'pixel-api-35',
+      deviceUdid: 'emulator-5554',
+      automationName: 'UiAutomator2',
+      serverUrl: 'http://127.0.0.1:4723',
     });
 
     expect(parseRecordingDocument(recording).target).toEqual({
@@ -54,7 +57,29 @@ describe('RecordingSchema', () => {
       mode: 'native',
       appId: 'org.example.app',
       deviceProfile: 'pixel-api-35',
+      deviceUdid: 'emulator-5554',
+      automationName: 'UiAutomator2',
+      serverUrl: 'http://127.0.0.1:4723',
     });
+  });
+
+  test('infers Android for legacy mobile actions instead of routing them to web', () => {
+    const migrated = parseRecordingDocument({
+      name: 'Legacy Android journey', timestamp: 1234,
+      actions: [{ type: 'launchApp', selector: 'device', value: 'org.example.app', timestamp: 10,
+        metadata: { appActivity: '.MainActivity' } }, { type: 'tap', selector: 'id=login', timestamp: 20 }],
+    });
+    expect(migrated.target).toMatchObject({ platform: 'android', mode: 'native', appId: 'org.example.app',
+      appActivity: '.MainActivity', automationName: 'UiAutomator2' });
+  });
+
+  test('upgrades incorrectly web-tagged mobile actions to the safe Android route', () => {
+    const migrated = parseRecordingDocument({
+      schemaVersion: RECORDING_SCHEMA_VERSION, name: 'Mis-tagged mobile recording', createdAt: 1, updatedAt: 2,
+      target: { platform: 'web', mode: 'web' },
+      actions: [{ type: 'mobileKey', selector: 'device', value: 'BACK', timestamp: 10 }],
+    });
+    expect(migrated.target.platform).toBe('android');
   });
 
   test('rejects incompatible platform and application modes', () => {

@@ -181,7 +181,7 @@ export function createRecordingDocument(
   name: string,
   actions: unknown,
   timestamp = Date.now(),
-  target: AutomationTarget = DEFAULT_WEB_TARGET
+  target?: AutomationTarget
 ): RecordingDocument {
   const normalizedName = validateName(name);
   const validatedActions = validateRecordedActions(actions);
@@ -192,7 +192,7 @@ export function createRecordingDocument(
     createdAt: timestamp,
     updatedAt: timestamp,
     actionCount: validatedActions.length,
-    target: validateAutomationTarget(target),
+    target: resolveRecordingTarget(target, validatedActions),
   };
 }
 
@@ -227,10 +227,45 @@ export function parseRecordingDocument(value: unknown): RecordingDocument {
     createdAt,
     updatedAt,
     actionCount: actions.length,
-    target: value.schemaVersion === 1 || value.target === undefined
-      ? { ...DEFAULT_WEB_TARGET }
-      : validateAutomationTarget(value.target),
+    target: resolveRecordingTarget(value.target, actions),
   };
+}
+
+/**
+ * Mobile recordings created before target metadata was reliable must never fall
+ * through to a web executor. Action evidence is intentionally allowed to
+ * upgrade a missing or incorrectly-web target to Android; the opposite is never
+ * inferred because launching Appium is the higher-risk operation.
+ */
+export function resolveRecordingTarget(value: unknown, actions: RecordedAction[]): AutomationTarget {
+  const explicit = value === undefined ? { ...DEFAULT_WEB_TARGET } : validateAutomationTarget(value);
+  if (explicit.platform !== 'web' || !hasMobileActionEvidence(actions)) return explicit;
+  const launch = actions.find((action) => action.type === 'launchApp');
+  const launchMetadata = isRecord(launch?.metadata) ? launch.metadata : {};
+  const context = actions.find((action) => action.locatorFingerprint?.mobileContext)?.locatorFingerprint?.mobileContext;
+  return {
+    platform: context?.platform || 'android',
+    mode: context?.mode || 'native',
+    automationName: context?.automationName || 'UiAutomator2',
+    appId: context?.appId || launch?.value || undefined,
+    appActivity: typeof launchMetadata.appActivity === 'string' ? launchMetadata.appActivity : undefined,
+  };
+}
+
+function hasMobileActionEvidence(actions: RecordedAction[]): boolean {
+  const mobileTypes = new Set([
+    'tap', 'longPress', 'swipe', 'back', 'rotate', 'clear', 'launchApp', 'terminateApp',
+    'switchContext', 'hideKeyboard', 'deepLink', 'acceptAlert', 'dismissAlert',
+    'grantPermission', 'revokePermission', 'resetApp', 'installApp', 'clearAppData', 'mobileKey',
+  ]);
+  return actions.some((action) => {
+    const metadata = isRecord(action.metadata) ? action.metadata : {};
+    return (
+    mobileTypes.has(action.type) ||
+    metadata.mobileRecording === true ||
+    Boolean(action.locatorFingerprint?.mobileContext)
+    );
+  });
 }
 
 function validateAutomationTarget(value: unknown): AutomationTarget {
@@ -251,7 +286,7 @@ function validateAutomationTarget(value: unknown): AutomationTarget {
   if (value.platform !== 'web' && value.mode === 'web') {
     throw new RecordingValidationError(['mobile targets cannot use web mode']);
   }
-  for (const field of ['name', 'appId', 'appActivity', 'deviceProfile'] as const) {
+  for (const field of ['name', 'appId', 'appActivity', 'deviceProfile', 'deviceUdid', 'automationName', 'serverUrl'] as const) {
     if (value[field] !== undefined && (typeof value[field] !== 'string' || value[field].length > 500)) {
       throw new RecordingValidationError([`target.${field} must be a string no longer than 500 characters`]);
     }

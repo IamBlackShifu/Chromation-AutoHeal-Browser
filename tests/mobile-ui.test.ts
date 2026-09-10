@@ -124,4 +124,20 @@ describe('Mobile automation UI', () => {
       expect(`${html}\n${renderer}\n${styles}`).toContain(marker);
     }
   });
+
+  test('asks authors to choose mobile identifiers and makes coordinate fallback explicit', () => {
+    for (const id of ['mobile-locator-dialog', 'mobile-locator-form', 'mobile-locator-choices', 'mobile-locator-cancel']) {
+      expect(html).toContain(`id="${id}"`);
+    }
+    expect(renderer).toContain('requestMobileCaptureLocator(sample, context)');
+    expect(renderer).toContain("'Use coordinates for this step?'");
+    expect(renderer).toContain('preferredLocator: candidates');
+    expect(styles).toContain('.mobile-locator-choice');
+  });
+
+  test('shows exact copyable remediation commands for failed mobile setup checks', () => {
+    expect(renderer).toContain('mobile-doctor-copy');
+    expect(renderer).toContain('navigator.clipboard.writeText');
+    expect(styles).toContain('.mobile-doctor-command');
+  });
 });

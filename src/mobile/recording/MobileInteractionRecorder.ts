@@ -16,6 +16,8 @@ export interface TranslationContext {
   hierarchyCapturedAt?: number;
   platform?: 'android' | 'ios'; mode?: string; appId?: string; automationName?: string; contextName?: string;
   screen?: string; orientation?: string;
+  preferredLocator?: LocatorCandidate;
+  forceCoordinates?: boolean;
 }
 export interface RecordedMobileAction {
   id: string; schemaVersion: 1; type: 'launchApp' | 'tap' | 'doubleclick' | 'longPress' | 'swipe';
@@ -27,6 +29,7 @@ export interface RecordedMobileAction {
     durationMs: number; direction?: 'up' | 'down' | 'left' | 'right'; distanceRatio: number;
     startX?: number; startY?: number; endX?: number; endY?: number;
     hierarchyAgeMs?: number; warnings: string[];
+    locatorChosenByUser?: boolean;
   };
 }
 
@@ -78,11 +81,16 @@ export function translatePointerInteraction(sample: PointerSample, context: Tran
   const hit = resolveElementAtPoint(context.elements, targetPoint);
   const candidates = hit?.element.locators || [];
   const ranked = [...candidates].sort((left, right) => locatorPriority(left.strategy) - locatorPriority(right.strategy) || right.score - left.score);
-  const primary = ranked.find((locator) => locator.score >= 0.5 && locator.strategy.toLowerCase() !== 'xpath')
+  const preferred = !context.forceCoordinates && context.preferredLocator && ranked.find((locator) =>
+    locator.strategy === context.preferredLocator?.strategy && locator.value === context.preferredLocator?.value);
+  const primary = context.forceCoordinates ? undefined : preferred || ranked.find((locator) => locator.score >= 0.5 && locator.strategy.toLowerCase() !== 'xpath')
     || ranked.find((locator) => locator.score >= 0.5);
-  const resolution: MobileCaptureResolution = hit?.ambiguous ? 'ambiguous' : primary ? 'resolved' : 'coordinate-only';
+  const resolution: MobileCaptureResolution = context.forceCoordinates ? 'coordinate-only' : hit?.ambiguous ? 'ambiguous' : primary ? 'resolved' : 'coordinate-only';
   const warnings = resolution === 'coordinate-only' ? ['No stable locator was resolved; replay will use coordinates.']
     : resolution === 'ambiguous' ? ['Multiple elements share these bounds; review the target.'] : [];
+  if (preferred && (preferred.score < 0.5 || preferred.strategy.toLowerCase().includes('xpath'))) {
+    warnings.push('The selected locator is a lower-confidence fallback; review it before suite replay.');
+  }
   const isStale = Boolean(context.hierarchyCapturedAt && sample.endedAt - context.hierarchyCapturedAt > 1500);
   if (isStale) warnings.push('Hierarchy snapshot is stale (>1.5s old); locator accuracy may be reduced.');
   return {
@@ -102,7 +110,8 @@ export function translatePointerInteraction(sample: PointerSample, context: Tran
       streamStart: { ...sample.start }, streamEnd: { ...sample.end }, deviceStart: { ...sample.start }, deviceEnd: { ...sample.end },
       durationMs: gesture.durationMs, direction: gesture.direction, distanceRatio: Number(gesture.distanceRatio.toFixed(4)),
       startX: sample.start.x, startY: sample.start.y, endX: sample.end.x, endY: sample.end.y,
-      hierarchyAgeMs: context.hierarchyCapturedAt ? Math.max(0, sample.endedAt - context.hierarchyCapturedAt) : undefined, warnings },
+      hierarchyAgeMs: context.hierarchyCapturedAt ? Math.max(0, sample.endedAt - context.hierarchyCapturedAt) : undefined,
+      locatorChosenByUser: Boolean(preferred || context.forceCoordinates), warnings },
   };
 }
 

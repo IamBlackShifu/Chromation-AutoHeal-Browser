@@ -90,6 +90,22 @@ describe('mobile interaction recording', () => {
     expect((action.locatorFingerprint as any).locatorCandidates.map((candidate: any) => candidate.strategy)).toEqual(['accessibility id', 'id', 'xpath']);
   });
 
+  it('honors an explicitly selected identifier and marks the choice', () => {
+    const preferred = elements[1].locators[1];
+    const action = translatePointerInteraction({ start: { x: 400, y: 760 }, end: { x: 400, y: 760 }, startedAt: 1, endedAt: 50 },
+      { elements, viewportSize: { width: 1080, height: 1920 }, preferredLocator: preferred });
+    expect(action.selector).toBe('xpath=//button');
+    expect(action.metadata.locatorChosenByUser).toBe(true);
+    expect(action.metadata.warnings).toContain('The selected locator is a lower-confidence fallback; review it before suite replay.');
+  });
+
+  it('uses coordinates only when the author explicitly selects that fallback', () => {
+    const action = translatePointerInteraction({ start: { x: 400, y: 760 }, end: { x: 400, y: 760 }, startedAt: 1, endedAt: 50 },
+      { elements, viewportSize: { width: 1080, height: 1920 }, forceCoordinates: true });
+    expect(action.selector).toBe('coordinates=400,760');
+    expect(action.metadata.resolution).toBe('coordinate-only');
+  });
+
   it('requires an explicit app target and keeps launch fixed while editing the session', () => {
     const session = new MobileRecordingSession();
     expect(() => session.start('')).toThrow('explicit application ID');

@@ -18,6 +18,9 @@ describe('Mobile Electron IPC bridge', () => {
     expect(main).toContain('ANDROID_ACTION_MATRIX');
     expect(main).toContain("'appium.cmd'");
     expect(main).toContain("'adb', ['devices', '-l']");
+    expect(main).toContain("command: 'npm install -g appium@3'");
+    expect(main).toContain("command: 'appium driver install uiautomator2'");
+    expect(main).toContain("dependsOn: appium.ok ? undefined : 'appium'");
   });
 
   test('validates renderer origin, local Appium URL, platform, and device name', () => {

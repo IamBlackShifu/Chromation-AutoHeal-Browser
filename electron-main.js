@@ -529,7 +529,7 @@ ipcMain.handle('load-recordings', async () => {
         }
       })
       .filter(Boolean)
-      .sort((a, b) => b.timestamp - a.timestamp);
+      .sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0));
     
     console.log(`Loaded ${recordings.length} recordings`);
     return { success: true, recordings };
@@ -733,14 +733,14 @@ ipcMain.handle('mobile-doctor', async (event) => {
   const scrcpy = runDoctorCommand(process.platform === 'win32' ? 'scrcpy.exe' : 'scrcpy', ['--version'], /scrcpy/i);
   const java = runDoctorCommand('java', ['-version']);
   const checks = [
-    { id: 'appium', label: 'Appium server', status: appium.ok ? 'passed' : 'failed', detail: appium.output || 'Not available', remedy: 'Install Appium 3 and ensure appium is on PATH.' },
-    { id: 'uiautomator2', label: 'UiAutomator2 driver', status: drivers.ok ? 'passed' : 'failed', detail: drivers.output || 'Not installed', remedy: 'Run appium driver install uiautomator2.' },
+    { id: 'appium', label: 'Appium server', status: appium.ok ? 'passed' : 'failed', detail: appium.output || 'The Appium command is not available on PATH.', remedy: 'Install Appium 3 globally, restart OmniFlow QA, then run Setup Doctor again.', command: 'npm install -g appium@3' },
+    { id: 'uiautomator2', label: 'UiAutomator2 driver', status: drivers.ok ? 'passed' : 'failed', detail: appium.ok ? (drivers.output || 'UiAutomator2 is not installed.') : 'Cannot inspect drivers until Appium is installed and available on PATH.', remedy: appium.ok ? 'Install the Android UiAutomator2 driver, then run Setup Doctor again.' : 'Install Appium first; then install UiAutomator2.', command: 'appium driver install uiautomator2', dependsOn: appium.ok ? undefined : 'appium' },
     { id: 'adb', label: 'Android Debug Bridge', status: adb.ok ? 'passed' : 'failed', detail: adb.output || 'Not available', remedy: 'Install Android platform-tools and add adb to PATH.' },
     { id: 'java', label: 'Java runtime', status: java.ok ? 'passed' : 'failed', detail: java.output || 'Not available', remedy: 'Install a supported JDK and configure JAVA_HOME.' },
     { id: 'device', label: 'Authorized device', status: devices.ok ? 'passed' : 'warning', detail: devices.output || 'No device detected', remedy: 'Start an emulator or authorize USB debugging on a connected device.' },
     { id: 'scrcpy', label: 'Low-latency mirror', status: scrcpy.ok ? 'passed' : 'warning', detail: scrcpy.output || 'scrcpy is not installed', remedy: 'Install scrcpy to enable the native low-latency control window; the embedded inspector will continue using MJPEG or screenshots.' },
   ];
-  return { success: true, ready: checks.every((check) => check.status === 'passed'), checks, actionMatrix: ANDROID_ACTION_MATRIX };
+  return { success: true, ready: checks.filter((check) => check.id !== 'scrcpy').every((check) => check.status === 'passed'), checks, actionMatrix: ANDROID_ACTION_MATRIX };
 });
 
 ipcMain.handle('mobile-workspace-readiness', async (event, request) => {

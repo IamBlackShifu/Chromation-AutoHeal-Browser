@@ -167,6 +167,87 @@ function workspaceForRecordingTarget(target) {
   return target?.platform === 'android' || target?.platform === 'ios' ? 'mobile' : 'web';
 }
 
+const MOBILE_REPLAY_ACTIONS = new Set(['tap', 'longPress', 'swipe', 'back', 'rotate', 'clear', 'installApp', 'launchApp', 'terminateApp', 'switchContext', 'hideKeyboard', 'deepLink', 'acceptAlert', 'dismissAlert', 'grantPermission', 'revokePermission', 'resetApp', 'clearAppData', 'mobileKey']);
+
+function identifyRecordingTarget(target, actions = [], filename = '') {
+  const mobileEvidence = target?.platform === 'android' || target?.platform === 'ios' ||
+    String(filename).toLowerCase().startsWith('mobile_suite_') ||
+    actions.some((action) => MOBILE_REPLAY_ACTIONS.has(action.type) || action.metadata?.mobileRecording === true || action.locatorFingerprint?.mobileContext);
+  if (!mobileEvidence) return { platform: 'web', mode: target?.mode === 'mobileWeb' ? 'mobileWeb' : 'web', ...(target || {}) };
+  const launch = actions.find((action) => action.type === 'launchApp');
+  const context = actions.find((action) => action.locatorFingerprint?.mobileContext)?.locatorFingerprint?.mobileContext;
+  return {
+    ...(target || {}), platform: target?.platform === 'ios' ? 'ios' : (context?.platform || 'android'),
+    mode: target?.mode && target.mode !== 'web' ? target.mode : (context?.mode || 'native'),
+    automationName: target?.automationName || context?.automationName || 'UiAutomator2',
+    appId: target?.appId || context?.appId || launch?.value || undefined,
+    appActivity: target?.appActivity || launch?.metadata?.appActivity || undefined,
+  };
+}
+
+function hydrateMobileTargetFields(target) {
+  const values = {
+    'mobile-platform': target.platform,
+    'mobile-mode': target.mode,
+    'mobile-device-name': target.name,
+    'mobile-device-udid': target.deviceUdid,
+    'mobile-app-id': target.appId,
+    'mobile-app-activity': target.appActivity,
+    'mobile-server-url': target.serverUrl,
+  };
+  Object.entries(values).forEach(([id, value]) => { const field = document.getElementById(id); if (field && value) field.value = value; });
+}
+
+async function prepareRecordingReplay(actions) {
+  const identified = identifyRecordingTarget(currentRecordingTarget, actions, currentRecordingFilename);
+  const requiredWorkspace = workspaceForRecordingTarget(identified);
+  currentRecordingTarget = identified;
+  if (requiredWorkspace !== activeAutomationWorkspace) {
+    const switched = await switchAutomationWorkspace(requiredWorkspace);
+    if (switched === false) return null;
+    await recorder.setActions(actions);
+    recordedActions = normalizeRecordedActions(actions);
+    currentRecordingTarget = identified;
+  }
+  if (requiredWorkspace === 'web') {
+    statusText.textContent = 'Web recording identified. Preparing browser replay.';
+    showToast('Web recording identified — replay will use a web executor.', 'info');
+    return { target: identified, engine: null };
+  }
+  if (identified.platform === 'ios') {
+    showToast('This is an iOS recording. iOS replay is not implemented in this build.', 'error');
+    return null;
+  }
+  hydrateMobileTargetFields(identified);
+  showMobilePanel(); sidePanel.classList.add('open'); renderMobileRecordingFeed(actions);
+  const connection = currentMobileConnection();
+  const [readiness, status, devices] = await Promise.all([
+    ipcRenderer.invoke('mobile-workspace-readiness', { serverUrl: connection.serverUrl, appId: connection.appId }),
+    ipcRenderer.invoke('mobile-status'),
+    ipcRenderer.invoke('mobile-list-devices'),
+  ]);
+  const readyDevices = (devices?.devices || []).filter((device) => device.state === 'device');
+  const selectedReady = connection.udid
+    ? readyDevices.some((device) => device.serial === connection.udid)
+    : readyDevices.length > 0;
+  const missing = [
+    !connection.appId && 'saved application ID',
+    !readiness?.checks?.bridge && 'ADB',
+    !readiness?.checks?.appium && 'Appium',
+    !selectedReady && (connection.udid ? `device ${connection.udid}` : 'an authorized Android device'),
+  ].filter(Boolean);
+  if (missing.length) {
+    statusText.textContent = `Mobile recording identified. Replay blocked: ${missing.join(', ')} required.`;
+    showToast(`Mobile replay needs ${missing.join(', ')}. Connect/configure the device in Mobile Studio, then replay again.`, 'warning', 8000);
+    return null;
+  }
+  const deviceLabel = connection.udid || readyDevices[0]?.serial || connection.deviceName;
+  const confirmed = await requestConfirmation(
+    `This is an Android recording for ${connection.appId}. Confirm that ${deviceLabel} is connected, authorized, unlocked, and showing a safe starting state. Appium will control the device.`,
+    'Replay mobile recording?', 'Replay on device');
+  return confirmed ? { target: identified, engine: 'appium' } : null;
+}
+
 function escapeReportText(value) {
   return String(value ?? '').replace(/[&<>"']/g, (character) => ({
     '&': '&amp;',
@@ -1099,8 +1180,12 @@ function showMobilePanel() {
     document.querySelector('.mobile-doctor-results')?.remove();
     const card = document.createElement('div');
     card.className = `mobile-doctor-results ${result.ready ? 'ready' : 'attention'}`;
-    card.innerHTML = `<div class="mobile-doctor-heading"><strong>${result.ready ? 'Ready for Android automation' : 'Setup needs attention'}</strong><span>${result.checks.filter((item) => item.status === 'passed').length}/${result.checks.length} checks passed</span></div>${result.checks.map((item) => `<details class="mobile-doctor-check ${item.status}"><summary><i></i><span>${escapeReportText(item.label)}</span><b>${item.status}</b></summary><code>${escapeReportText(item.detail)}</code>${item.status !== 'passed' ? `<p>${escapeReportText(item.remedy)}</p>` : ''}</details>`).join('')}`;
+    card.innerHTML = `<div class="mobile-doctor-heading"><strong>${result.ready ? 'Ready for Android automation' : 'Setup needs attention'}</strong><span>${result.checks.filter((item) => item.status === 'passed').length}/${result.checks.length} checks passed</span></div>${result.checks.map((item) => `<details class="mobile-doctor-check ${item.status}" ${item.status === 'failed' ? 'open' : ''}><summary><i></i><span>${escapeReportText(item.label)}</span><b>${item.status}</b></summary><code>${escapeReportText(item.detail)}</code>${item.status !== 'passed' ? `<p>${escapeReportText(item.remedy)}</p>${item.command ? `<div class="mobile-doctor-command"><code>${escapeReportText(item.command)}</code><button type="button" class="mobile-doctor-copy" data-command="${escapeReportText(item.command)}">Copy command</button></div>` : ''}` : ''}</details>`).join('')}`;
     document.querySelector('.mobile-panel-hero')?.after(card);
+    card.querySelectorAll('.mobile-doctor-copy').forEach((button) => button.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(button.dataset.command); button.textContent = 'Copied'; showToast('Setup command copied. Run it in a terminal, restart OmniFlow QA, and check setup again.', 'success'); }
+      catch (_) { showToast(`Copy this command: ${button.dataset.command}`, 'info', 8000); }
+    }));
     message.textContent = result.ready ? 'Environment checks passed. Choose a profile and connect.' : 'Resolve the highlighted checks before connecting.';
   });
   connect?.addEventListener('click', async () => {
@@ -1160,6 +1245,8 @@ function showMobilePanel() {
       platform: 'android', mode: document.getElementById('mobile-mode').value,
       name: deviceName.value.trim(), appId: document.getElementById('mobile-app-id').value.trim() || undefined,
       appActivity: document.getElementById('mobile-app-activity').value.trim() || undefined,
+      deviceUdid: document.getElementById('mobile-device-udid').value.trim() || undefined,
+      automationName: 'UiAutomator2', serverUrl: document.getElementById('mobile-server-url').value || undefined,
     };
     message.textContent = `Connected to Appium session ${result.sessionInfo.sessionId}.`;
     showToast('Mobile device connected', 'success');
@@ -1548,6 +1635,47 @@ async function replayMobileRecordingFromStudio(button) {
   finally { button.textContent = '▷ Replay'; updateMobileRecordingControls(); }
 }
 
+function mobileLocatorPriority(strategy) {
+  const normalized = String(strategy || '').toLowerCase().replace(/[\s_-]/g, '');
+  if (normalized.includes('accessibility')) return 0;
+  if (normalized === 'id' || normalized.includes('resourceid') || normalized === 'name') return 1;
+  if (normalized.includes('uiautomator') || normalized.includes('text')) return 2;
+  if (normalized.includes('class')) return 3;
+  if (normalized.includes('xpath')) return 4;
+  return 5;
+}
+
+async function requestMobileCaptureLocator(sample, context) {
+  const dx = sample.end.x - sample.start.x; const dy = sample.end.y - sample.start.y;
+  const distanceRatio = Math.max(Math.abs(dx) / Math.max(1, context.viewportSize.width), Math.abs(dy) / Math.max(1, context.viewportSize.height));
+  if (distanceRatio >= .035) return {};
+  const hit = resolveMobileElementAtPoint(context.elements || [], sample.end);
+  const candidates = [...(hit?.element?.locators || [])].filter((locator) => locator?.strategy && locator?.value)
+    .sort((left, right) => mobileLocatorPriority(left.strategy) - mobileLocatorPriority(right.strategy) || right.score - left.score);
+  if (!candidates.length) {
+    const useCoordinates = await requestConfirmation(
+      `No accessibility ID, resource ID, or other hierarchy locator was found at (${Math.round(sample.end.x)}, ${Math.round(sample.end.y)}). Coordinate replay can break on another screen size or layout.`,
+      'Use coordinates for this step?', 'Use coordinates');
+    return useCoordinates ? { forceCoordinates: true } : null;
+  }
+  const dialog = document.getElementById('mobile-locator-dialog'); const form = document.getElementById('mobile-locator-form');
+  const choices = document.getElementById('mobile-locator-choices'); const cancel = document.getElementById('mobile-locator-cancel');
+  if (!dialog || !form || !choices) return { preferredLocator: candidates[0] };
+  const elementName = hit.element.label || hit.element.text || hit.element.attributes?.['resource-id'] || hit.element.elementType;
+  setText('mobile-locator-context', `${elementName || 'Selected element'} has ${candidates.length} identifier option${candidates.length === 1 ? '' : 's'}. Choose the locator this step should keep.`);
+  choices.innerHTML = candidates.map((locator, index) => {
+    const risky = mobileLocatorPriority(locator.strategy) >= 4 || locator.score < .5;
+    return `<label class="mobile-locator-choice ${risky ? 'risky' : ''}"><input type="radio" name="mobile-locator-choice" value="${index}" ${index === 0 ? 'checked' : ''}><span><code>${escapeReportText(locator.strategy)}=${escapeReportText(locator.value)}</code><small>${escapeReportText((locator.reasons || []).join(' · ') || (index === 0 ? 'Recommended by locator ranking' : 'Alternative identifier'))}</small></span><b>${Math.round(Number(locator.score || 0) * 100)}%</b></label>`;
+  }).join('') + `<label class="mobile-locator-choice risky"><input type="radio" name="mobile-locator-choice" value="coordinates"><span><code>coordinates=${Math.round(sample.end.x)},${Math.round(sample.end.y)}</code><small>Layout-dependent fallback; use only when identifiers are unsuitable.</small></span><b>Low</b></label>`;
+  dialog.classList.remove('hidden'); requestAnimationFrame(() => choices.querySelector('input:checked')?.focus());
+  return new Promise((resolve) => {
+    const finish = (value) => { dialog.classList.add('hidden'); form.removeEventListener('submit', submit); cancel.removeEventListener('click', cancelCapture); resolve(value); };
+    const submit = (event) => { event.preventDefault(); const selected = choices.querySelector('input:checked')?.value;
+      finish(selected === 'coordinates' ? { forceCoordinates: true } : { preferredLocator: candidates[Number(selected) || 0] }); };
+    const cancelCapture = () => finish(null); form.addEventListener('submit', submit); cancel.addEventListener('click', cancelCapture);
+  });
+}
+
 async function captureNativeMobileTouch(sample) {
   if (mobileRecordingState !== 'recording' || Date.now() < suppressNativeTouchUntil) return;
   if (!activeMobileInspection) await refreshMobileInspection();
@@ -1560,13 +1688,16 @@ async function captureNativeMobileTouch(sample) {
   const inspectionBeforeAction = activeMobileInspection;
   const focusedBefore = findFocusedEditableMobileElement(inspectionBeforeAction.elements || []);
   const keyboardInteraction = Boolean(focusedBefore && sample.end.y >= display.height * .62);
-  const captured = keyboardInteraction ? null : await chromationBrowser.mobileRecording.capture(sample, {
+  const captureContext = {
     elements: activeMobileInspection.elements || [],
     viewportSize: { width: screenshot?.naturalWidth || 1, height: screenshot?.naturalHeight || 1 }, hierarchyCapturedAt: mobileInspectionCapturedAt,
     platform: document.getElementById('mobile-platform')?.value || 'android', mode: document.getElementById('mobile-mode')?.value || 'native',
     appId: document.getElementById('mobile-app-id')?.value || 'current-app', contextName: document.getElementById('mobile-context')?.value || 'NATIVE_APP',
     screen: document.getElementById('mobile-screen')?.textContent, orientation: document.getElementById('mobile-orientation')?.textContent,
-  });
+  };
+  const locatorChoice = keyboardInteraction ? {} : await requestMobileCaptureLocator(sample, captureContext);
+  if (!keyboardInteraction && !locatorChoice) { mobileCaptureDiagnostics.dropped += 1; mobileCaptureDiagnostics.lastDrop = 'locator selection cancelled'; updateMobileRecordingClock(); return; }
+  const captured = keyboardInteraction ? null : await chromationBrowser.mobileRecording.capture(sample, { ...captureContext, ...locatorChoice });
   if (captured) {
     const { action, replacedLast } = captured;
     if (replacedLast) {
@@ -1734,7 +1865,9 @@ async function finishMobileRecordingPointer(event) {
 }
 
 async function processEmbeddedMobileCapture(sample, context, pointerVisual, image) {
-  const captured = await chromationBrowser.mobileRecording.capture(sample, context);
+  const locatorChoice = await requestMobileCaptureLocator(sample, context);
+  if (!locatorChoice) { mobileCaptureDiagnostics.dropped += 1; mobileCaptureDiagnostics.lastDrop = 'locator selection cancelled'; updateMobileRecordingClock(); return; }
+  const captured = await chromationBrowser.mobileRecording.capture(sample, { ...context, ...locatorChoice });
   if (!captured) { mobileCaptureDiagnostics.dropped += 1; mobileCaptureDiagnostics.lastDrop = 'session rejected sample'; updateMobileRecordingClock(); return; }
   const { action, executeAction, replacedLast } = captured;
   showMobileCaptureRipple(pointerVisual, image);
@@ -2039,6 +2172,8 @@ async function addRecordedMobileAction(action) {
     name: document.getElementById('mobile-device-name')?.value.trim() || undefined,
     appId: document.getElementById('mobile-app-id')?.value.trim() || undefined,
     appActivity: document.getElementById('mobile-app-activity')?.value.trim() || undefined,
+    deviceUdid: document.getElementById('mobile-device-udid')?.value.trim() || undefined,
+    automationName: 'UiAutomator2', serverUrl: document.getElementById('mobile-server-url')?.value || undefined,
   };
   updatePhase1Badges();
   showToast(`Added ${action.type} step to the recording`, 'success');
@@ -2054,6 +2189,8 @@ async function beginIsolatedMobileRecording(launchAction, target) {
     name: document.getElementById('mobile-device-name')?.value.trim() || undefined,
     appId: target.appId,
     appActivity: target.appActivity || undefined,
+    deviceUdid: document.getElementById('mobile-device-udid')?.value.trim() || undefined,
+    automationName: 'UiAutomator2', serverUrl: document.getElementById('mobile-server-url')?.value || undefined,
   };
   workspaceSessionStores.mobile = { actions: recordedActions, target: { ...currentRecordingTarget } };
   persistWorkspaceDrafts();
@@ -3494,13 +3631,16 @@ async function replayActions(speed = 1.0, engine = 'webview', policy = { timeout
   if (!recorder || isReplaying || isRecording) return;
   
   const actions = recorder.getActions();
-  const requestedEngine = engine;
-  engine = resolveReplayEngine(engine, actions);
-  let replayTerminalState = 'passed';
   if (actions.length === 0) {
     statusText.textContent = 'No actions to replay';
     return;
   }
+  const replayPreparation = await prepareRecordingReplay(actions);
+  if (!replayPreparation) return;
+  const requestedEngine = engine;
+  if (replayPreparation.engine) engine = replayPreparation.engine;
+  engine = resolveReplayEngine(engine, actions);
+  let replayTerminalState = 'passed';
   
   isReplaying = true;
   currentReplayEngine = engine;
@@ -3531,7 +3671,7 @@ async function replayActions(speed = 1.0, engine = 'webview', policy = { timeout
       ? `Running ${actions.length} actions with Playwright executor...`
       : `Replaying ${actions.length} actions at ${speed}x speed...`;
   if (requestedEngine === 'auto') {
-    showToast(`Auto selected ${engine === 'playwright' ? 'Playwright' : 'In-Browser Replay'}`, 'info');
+    showToast(`Auto selected ${engine === 'appium' ? 'Appium' : engine === 'playwright' ? 'Playwright' : 'In-Browser Replay'}`, 'info');
   }
   
   try {
@@ -3735,11 +3875,11 @@ function currentMobileConnection() {
   return {
     platform: 'android',
     mode: currentRecordingTarget.mode || document.getElementById('mobile-mode')?.value || 'native',
-    serverUrl: document.getElementById('mobile-server-url')?.value || 'http://127.0.0.1:4723',
+    serverUrl: document.getElementById('mobile-server-url')?.value || currentRecordingTarget.serverUrl || 'http://127.0.0.1:4723',
     deviceName: document.getElementById('mobile-device-name')?.value.trim() || currentRecordingTarget.name || 'Android',
-    udid: document.getElementById('mobile-device-udid')?.value.trim() || '',
+    udid: document.getElementById('mobile-device-udid')?.value.trim() || currentRecordingTarget.deviceUdid || '',
     appId: document.getElementById('mobile-app-id')?.value.trim() || currentRecordingTarget.appId || '',
-    appActivity: document.getElementById('mobile-app-activity')?.value.trim() || '',
+    appActivity: document.getElementById('mobile-app-activity')?.value.trim() || currentRecordingTarget.appActivity || '',
   };
 }
 
@@ -3795,8 +3935,7 @@ async function captureInteractivePageState() {
 }
 
 function resolveReplayEngine(engine, actions) {
-  const mobileActions = new Set(['tap', 'longPress', 'swipe', 'back', 'rotate', 'clear', 'installApp', 'launchApp', 'terminateApp', 'switchContext', 'hideKeyboard', 'deepLink', 'acceptAlert', 'dismissAlert', 'grantPermission', 'revokePermission', 'resetApp', 'clearAppData', 'mobileKey']);
-  if (currentRecordingTarget.platform === 'android' || actions.some((action) => mobileActions.has(action.type) || action.locatorFingerprint?.mobileContext)) return 'appium';
+  if (identifyRecordingTarget(currentRecordingTarget, actions, currentRecordingFilename).platform === 'android') return 'appium';
   if (engine !== 'auto') return engine;
   const playwrightOnly = new Set(['visual', 'api', 'mockNetwork', 'accessibility', 'performance', 'plugin']);
   return actions.some((action) =>
@@ -4818,10 +4957,11 @@ function renderHomeRecordings(recordings) {
     const timestamp = recording.updatedAt || recording.createdAt || recording.timestamp || Date.now();
     const date = formatRelativeTime(timestamp);
     const filename = escapeReportText(recording.filename);
+    const recordingWorkspace = workspaceForRecordingTarget(identifyRecordingTarget(recording.target, recording.actions, recording.filename));
     return `<article class="recording-row" data-filename="${filename}">
       <button class="recording-main home-load-recording" data-filename="${filename}" title="Edit ${escapeReportText(name)}">
         <span class="recording-avatar">${escapeReportText(getRecordingInitials(name))}</span>
-        <span><strong>${escapeReportText(name)}</strong><small><em class="recording-status-tag ready">Ready</em>${count} actions · ${date}</small></span>
+        <span><strong>${escapeReportText(name)}</strong><small><em class="recording-target-badge ${recordingWorkspace}">${recordingWorkspace === 'mobile' ? 'Android / Appium' : 'Web'}</em><em class="recording-status-tag ready">Ready</em>${count} actions · ${date}</small></span>
       </button>
       <div class="recording-row-actions">
         <button class="home-replay-recording" data-filename="${filename}" title="Replay recording" aria-label="Replay ${escapeReportText(name)}">▶</button>
@@ -5802,6 +5942,9 @@ async function saveRecording() {
   }
   
   try {
+    currentRecordingTarget = identifyRecordingTarget(currentRecordingTarget, actions, currentRecordingFilename);
+    const expectedWorkspace = workspaceForRecordingTarget(currentRecordingTarget);
+    if (expectedWorkspace !== activeAutomationWorkspace) throw new Error(`Recording target is ${expectedWorkspace}, but the ${activeAutomationWorkspace} editor is active`);
     const result = await ipcRenderer.invoke('save-recording', { name, actions, target: currentRecordingTarget });
     
     if (result.success) {
@@ -5833,14 +5976,16 @@ async function importRecording() {
     if (result.success && result.recording) {
       // Load the imported recording
       if (recorder && result.recording.actions) {
-        const target = result.recording.target || { platform: 'web', mode: 'web' };
+        const actions = normalizeRecordedActions(result.recording.actions);
+        const target = identifyRecordingTarget(result.recording.target, actions, result.filename);
         const requiredWorkspace = workspaceForRecordingTarget(target);
         if (requiredWorkspace !== activeAutomationWorkspace) await switchAutomationWorkspace(requiredWorkspace);
-        const actions = normalizeRecordedActions(result.recording.actions);
         recorder.setActions(actions);
         recordedActions = actions;
         currentRecordingTarget = target;
         currentRecordingFilename = result.filename || null;
+        workspaceSessionStores[requiredWorkspace] = { actions, target: { ...target } };
+        if (requiredWorkspace === 'mobile') hydrateMobileTargetFields(target);
         workspaceSavedSignatures[requiredWorkspace] = actionSignature(actions);
         updateActionsDisplay();
         statusText.textContent = `Imported recording: ${result.recording.name}`;
@@ -5892,11 +6037,12 @@ async function showSavedRecordings() {
               <p>No saved recordings yet</p>
               <span>Record some actions and save them</span>
             </div>
-          ` : recordings.map(rec => `
+          ` : recordings.map(rec => { const recordingWorkspace = workspaceForRecordingTarget(identifyRecordingTarget(rec.target, rec.actions, rec.filename)); return `
             <div class="recording-item" data-filename="${rec.filename}">
               <div class="recording-info">
-                <h5 class="recording-name">${rec.name}</h5>
+                <h5 class="recording-name">${escapeReportText(rec.name)}</h5>
                 <p class="recording-meta">
+                  <em class="recording-target-badge ${recordingWorkspace}">${recordingWorkspace === 'mobile' ? 'Android / Appium' : 'Web'}</em>
                   ${rec.actionCount} actions • ${new Date(rec.createdAt || rec.timestamp).toLocaleString()}
                 </p>
               </div>
@@ -5921,7 +6067,7 @@ async function showSavedRecordings() {
                 </button>
               </div>
             </div>
-          `).join('')}
+          `; }).join('')}
         </div>
       </div>
     `;
@@ -5966,17 +6112,19 @@ async function loadRecording(filename) {
     
     if (result.success && result.recording) {
       if (recorder && result.recording.actions) {
-        const target = result.recording.target || { platform: 'web', mode: 'web' };
+        const actions = normalizeRecordedActions(result.recording.actions);
+        const target = identifyRecordingTarget(result.recording.target, actions, filename);
         const requiredWorkspace = workspaceForRecordingTarget(target);
         if (requiredWorkspace !== activeAutomationWorkspace) await switchAutomationWorkspace(requiredWorkspace);
-        const actions = normalizeRecordedActions(result.recording.actions);
         recorder.setActions(actions);
         recordedActions = actions;
         currentRecordingTarget = target;
         currentRecordingFilename = filename;
+        workspaceSessionStores[requiredWorkspace] = { actions, target: { ...target } };
         workspaceSavedSignatures[requiredWorkspace] = actionSignature(actions);
         
         if (requiredWorkspace === 'mobile') {
+          hydrateMobileTargetFields(target);
           showMobilePanel(); sidePanel.classList.add('open'); renderMobileRecordingFeed(actions);
         } else {
           showBrowseWorkspace(); sidePanel.classList.remove('open'); toggleTool('recorder');
@@ -5999,10 +6147,8 @@ async function loadRecording(filename) {
 async function loadAndReplayRecording(filename, engine = 'webview') {
   const loaded = await loadRecording(filename);
   if (!loaded) return;
-  // Wait a bit for the UI to update
-  setTimeout(() => {
-    replayActions(1.0, engine);
-  }, 500);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  await replayActions(1.0, engine);
 }
 
 async function deleteRecording(filename) {

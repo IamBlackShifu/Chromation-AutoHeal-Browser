@@ -4,7 +4,7 @@ OmniFlow QA is an Electron desktop QA workspace for web and Android automation.
 It brings browsing, inspection, recording, replay, locator healing, suites,
 reporting, and export into one developer-focused application.
 
-> Current status: `0.3.0-beta.1`. See the comprehensive
+> Current status: `0.3.0-beta.2`. See the comprehensive
 > [Current Product and Engineering State](docs/CURRENT_STATE.md) for verified Web
 > Automation, Mobile Automation, UI/UX, limitations, and next work.
 
@@ -133,6 +133,31 @@ events, the live timeline, the reopened JSON recording, and replay results step
 for step. Do not treat a successful file write or Appium session as proof that
 mobile recording works end to end. iOS is not implemented.
 
+#### Replay routing safeguards now implemented
+
+- Web and mobile drafts remain in separate workspace timelines and cross-target
+  saves are rejected instead of silently mixing steps.
+- Saved and recent recordings display a `Web` or `Android / Appium` identity.
+- Schema migration detects legacy mobile actions even when target metadata is
+  absent or incorrectly says `web`, preventing accidental browser replay.
+- Loading a mobile recording restores its application, activity, device serial,
+  automation name, and local Appium endpoint when those values were saved.
+- Android replay is blocked until the application identity, ADB, Appium, and an
+  authorized matching device are available, then asks for explicit confirmation
+  before Appium controls the device. iOS recordings are identified and rejected
+  with an implementation-status message.
+
+These safeguards fix target selection and replay preparation. They do not change
+the experimental status of physical mobile interaction capture described above.
+
+Mobile authoring now asks the user to choose among the hierarchy identifiers for
+each captured tap or long press. Accessibility IDs and resource IDs are ranked
+first, while confidence, ranking reasons, XPath alternatives, and the coordinate
+fallback remain visible. Coordinate capture requires explicit confirmation when
+no identifier exists and is labeled as a low-confidence, layout-dependent step.
+Setup Doctor expands failed checks and provides copyable Appium 3 and
+UiAutomator2 installation commands in dependency order.
+
 ### Web
 
 - Embedded webview and Playwright replay paths.
@@ -163,6 +188,12 @@ iOS is not implemented.
 
 ## Install and verify
 
+Windows end users can install the application with the single
+`OmniFlow-QA-Setup.exe` file produced in `release`. Electron, Chromium, and the
+application's Node.js packages are bundled, so Node.js and npm are not required
+on the end-user machine. See the [Windows installation guide](docs/INSTALL_WINDOWS.md)
+for optional Android automation prerequisites and official download links.
+
 Requirements: Node.js 20 or 22 and npm 10.
 
 ```powershell
@@ -179,6 +210,7 @@ Doctor reports missing dependencies.
 ## Documentation
 
 - [Documentation index](docs/README.md)
+- [Windows installation guide](docs/INSTALL_WINDOWS.md)
 - [Current state](docs/CURRENT_STATE.md)
 - [Mission delivery program](docs/MISSION_DELIVERY.md)
 - [Suites and workflows](docs/SUITES_AND_WORKFLOWS.md)

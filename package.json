@@ -1,6 +1,6 @@
 {
   "name": "omniflow-qa",
-  "version": "0.3.0-beta.1",
+  "version": "0.3.0-beta.2",
   "description": "Enterprise-grade unified Web and Mobile QA automation suite featuring live screen recording and auto-healing.",
   "main": "electron-main.js",
   "scripts": {
@@ -45,7 +45,18 @@
     },
     "win": {
       "icon": "assets/omniflow-qa-icon.png",
-      "executableName": "omniflow-qa"
+      "executableName": "omniflow-qa",
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "OmniFlow QA",
+      "deleteAppDataOnUninstall": false
     },
     "directories": {
       "output": "release"

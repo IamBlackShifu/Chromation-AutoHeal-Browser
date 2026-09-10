@@ -331,6 +331,16 @@
     </form>
   </div>
 
+  <div class="save-dialog-backdrop hidden" id="mobile-locator-dialog" role="dialog" aria-modal="true" aria-labelledby="mobile-locator-title">
+    <form class="save-dialog mobile-locator-dialog" id="mobile-locator-form">
+      <div class="save-dialog-icon">⌖</div><div><p class="eyebrow">MOBILE LOCATOR</p><h3 id="mobile-locator-title">Choose how to find this element</h3></div>
+      <p id="mobile-locator-context" class="save-dialog-context">Prefer an identifier that remains stable across layouts and devices.</p>
+      <fieldset class="mobile-locator-choices" id="mobile-locator-choices"><legend class="sr-only">Available mobile locators</legend></fieldset>
+      <p class="field-help">Accessibility ID or resource ID is usually safest. XPath and coordinates are fallbacks and may reduce replay confidence.</p>
+      <div class="save-dialog-actions"><button id="mobile-locator-cancel" type="button" class="secondary-btn">Do not capture</button><button type="submit" class="primary-btn">Use selected locator</button></div>
+    </form>
+  </div>
+
   <div class="save-dialog-backdrop hidden" id="mobile-target-dialog" role="dialog" aria-modal="true" aria-labelledby="mobile-target-title">
     <form class="save-dialog" id="mobile-target-form">
       <div class="save-dialog-icon">▣</div><div><p class="eyebrow">APPLICATION TARGET</p><h3 id="mobile-target-title">Identify the Android application</h3></div>
