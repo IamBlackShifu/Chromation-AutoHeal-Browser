@@ -1,6 +1,6 @@
 # OmniFlow QA Current Product and Engineering State
 
-Last verified: 10 September 2026
+Last verified: 18 September 2026
 
 Version: `0.3.0-beta.2`
 
@@ -36,8 +36,8 @@ may describe mobile recording as complete until repeatable five-screen journeys
 capture every supported user action and replay them successfully across the
 supported device matrix.
 
-The repository passes its complete automated gate: ESLint, 41 Jest suites with
-221 tests, TypeScript compilation, and Webpack. A Playwright Electron smoke also
+The repository passes its complete automated gate: ESLint, 45 Jest suites with
+242 tests, TypeScript compilation, and Webpack. A Playwright Electron smoke also
 certifies shell startup plus Mobile and Recorder drawer access. This is not a
 substitute for signed-release testing or the full record-to-report E2E matrix.
 
@@ -303,16 +303,34 @@ substitute for signed-release testing or the full record-to-report E2E matrix.
   trusted-renderer checks, CSP, navigation restrictions, and external URL allowlist.
 - Recording/schema validation, file-size and path controls, sanitized persisted
   actions, secret-like capability rejection, and safe-storage integration.
+- Playwright failure screenshots automatically mask password, one-time-code,
+  payment-card, secret/token, and explicitly privacy-marked web fields. Custom
+  mask selectors remain supported for application-specific sensitive regions.
+- Saved recordings, run history, browsing history, mobile profiles, and the
+  encrypted environment vault and origin policy use bounded, same-directory atomic JSON writes
+  with last-known-good backups. Existing stores gain a backup on first read,
+  malformed primaries recover automatically, and corrupt files are quarantined
+  with bounded retention instead of overwritten.
+- Privacy mode clears retained browsing/run evidence and recoverable drafts, then
+  suppresses their persistence plus web/Android screenshots, hierarchy/DOM,
+  console/device logs, network evidence, traces, video, cookies, and storage state.
+- Secret classification covers structured assignments, authorization schemes,
+  JWTs, private keys, nested capabilities/logs, Android hierarchy, and execution
+  failures. Configurable Android screenshot rectangles and automatically derived
+  sensitive-field bounds are masked before persistence and fail closed.
+- Origin permissions are allowlisted, normalized, trusted-renderer controlled,
+  atomically persisted, and displayed as actual policy rows in diagnostics.
 - Explicit confirmation for destructive user actions.
 - Plugin sandbox and permission approval model.
 
 ### Remaining security work
 
 - Complete threat model and packaged-app penetration review.
-- Broader evidence redaction for screenshots, hierarchy, logs, clipboard, and
-  notification content.
-- Formal per-origin permissions, storage quotas, retention, corruption recovery,
-  and privacy-mode acceptance tests.
+- Extend automatic visual PII discovery beyond semantic web fields, recorded
+  mobile sensitive bounds, and user-configured rectangles; clipboard and
+  notification-content policies also need packaged acceptance.
+- Complete the broader real-world origin/storage policy matrix and physically
+  certify Android masks across representative orientation/density variants.
 - The unsigned Windows NSIS installer is available. Code signing,
   upgrade/rollback verification, and dependency/security CI remain outstanding.
 
@@ -351,7 +369,7 @@ Run the complete deterministic gate with:
 npm.cmd run check
 ```
 
-Current result: 41 suites and 221 tests, plus lint and production build. The test
+Current result: 45 suites and 242 tests, plus lint and production build. The test
 count may grow; a green `npm run check` is the operative requirement.
 
 “Implemented” means the code path and deterministic coverage exist. “Physically
@@ -361,13 +379,12 @@ performance, and supported-environment acceptance gates.
 
 ## Recommended next work
 
-1. Obtain a clean hosted Windows CI pass for the expanded packaged recovery
-   journey, then begin U3 automatic sensitive-region masking, atomic persistence,
-   quotas, retention, and corruption recovery.
+1. Obtain a clean hosted Windows CI pass for the expanded packaged recovery and
+   privacy journey; the equivalent development Electron journey passes locally.
 2. Attach a second Android target and publish the physical concurrent replay result.
 3. Decompose renderer/styles and move remaining IPC payloads to typed contracts.
-4. Complete evidence redaction, origin permissions, retention, and corruption
-   recovery acceptance tests.
+4. Complete the formal threat model, packaged penetration review, broader
+   origin/storage policy matrix, and physical Android-mask acceptance.
 5. Add Windows signed installer, upgrade/rollback, security, and performance gates.
 6. Begin iOS only after a macOS/XCUITest worker and signing strategy exist.
 
@@ -389,6 +406,7 @@ acceptance criteria.
 - [Getting started](GETTING_STARTED.md)
 - [Suites and workflows](SUITES_AND_WORKFLOWS.md)
 - [Android compatibility matrix](ANDROID_COMPATIBILITY_MATRIX.md)
+- [U3 engineering log](U3_ENGINEERING_LOG.md)
 - [Runtime compatibility](COMPATIBILITY.md)
 - [Plugin SDK](PLUGIN_SDK.md)
 - [Testing](TESTING.md)

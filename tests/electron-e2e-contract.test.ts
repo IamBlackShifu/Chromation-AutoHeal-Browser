@@ -29,6 +29,10 @@ describe('Electron E2E certification foundation', () => {
     expect(smoke).toContain('navigationRecovery: true');
     expect(smoke).toContain('rendererCrashRecovery: true');
     expect(smoke).toContain('permissionRecovery: true');
+    expect(smoke).toContain('corruptionRecovery: corruptionRecoveryPassed');
+    expect(smoke).toContain('privacyMode: true');
+    expect(smoke).toContain('run-history.json.corrupt-');
+    expect(smoke).toContain("page.locator('#ui-privacy-mode').check()");
     expect(smoke).toContain('missing-without-fingerprint');
     expect(smoke).toContain('data-remediation="edit-step"');
     expect(smoke).toContain('CHROMATION_E2E_EXECUTABLE');
@@ -46,5 +50,15 @@ describe('Electron E2E certification foundation', () => {
     expect(renderer).toContain("showBrowserRecovery('navigation'");
     expect(renderer).toContain("showBrowserRecovery('crash'");
     expect(renderer).toContain('browserRecoveryTarget');
+  });
+
+  it('uses atomic, recoverable persistence for recordings and run history', () => {
+    expect(main).toContain("require('./dist/storage/AtomicJsonStore')");
+    expect(main).toContain('writeJsonAtomicSync(filePath, recording');
+    expect(main).toContain('readJsonWithRecoverySync(runHistoryPath');
+    expect(main).toContain('restoreOrphanedRecordingBackups');
+    expect(main).toContain('quarantined corrupt data');
+    expect(main).toContain('readJsonWithRecoverySync(environmentVaultPath');
+    expect(main).toContain('writeJsonAtomicSync(environmentVaultPath');
   });
 });

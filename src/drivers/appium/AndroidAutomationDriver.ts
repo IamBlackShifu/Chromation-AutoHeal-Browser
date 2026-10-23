@@ -6,6 +6,7 @@ import type {
 import type { ExecutionOptions, ExecutionResult, ExecutionState, ExecutionStateSnapshot, StepExecutionResult } from '../../executor/types';
 import type { RecordedAction } from '../../recorder/Recorder';
 import { validateRecordedActions } from '../../recording/RecordingSchema';
+import { redactMobileHierarchy, redactStructuredValue, redactText } from '../../recording/Security';
 import { AppiumClient, AppiumProtocolError } from './AppiumClient';
 import { MobileHierarchy, MobileInspector } from '../../mobile/inspector/MobileHierarchy';
 import type { InspectedElement } from '../../automation/types';
@@ -137,11 +138,18 @@ export class AndroidAutomationDriver implements AutomationDriver {
     const attachments: NonNullable<ExecutionResult['attachments']> = [];
     const consoleLogs: string[] = [];
     const contextTransitions: Array<{ step: number; before?: string; after?: string }> = [];
+    const captureScreenshots = options?.evidence?.screenshotOnFailure !== false;
+    const captureHierarchy = options?.evidence?.captureDomSnapshotOnFailure !== false;
+    const captureLogs = options?.evidence?.captureConsoleLogs !== false;
+    const captureMetadata = captureScreenshots || captureHierarchy || captureLogs;
+    const redactEvidence = options?.evidence?.redactSecrets !== false;
 
     try {
       if (ownsSession) await this.client.createSession(this.normalizedCapabilities(), controller.signal);
-      attachments.push({ name: 'android-capabilities.json', contentType: 'application/json',
-        data: JSON.stringify(this.normalizedCapabilities(), null, 2) });
+      if (captureMetadata) attachments.push({ name: 'android-capabilities.json', contentType: 'application/json',
+        data: JSON.stringify(redactEvidence
+          ? redactStructuredValue(this.normalizedCapabilities())
+          : this.normalizedCapabilities(), null, 2) });
       this.setState('running', runId, -1, actions.length);
       for (let index = 0; index < actions.length; index++) {
         if (controller.signal.aborted) throw controller.signal.reason;
@@ -183,12 +191,15 @@ export class AndroidAutomationDriver implements AutomationDriver {
             }
           }
           const endedAt = Date.now();
-          if (action.type === 'launchApp') {
+          if (captureLogs && action.type === 'launchApp') {
             const appId = String(action.value || this.config.capabilities['appium:appPackage'] || 'unknown');
             const activity = String((action.metadata as Record<string, unknown> | undefined)?.appActivity || this.config.capabilities['appium:appActivity'] || 'default activity');
-            consoleLogs.push(`[Replay Engine] Launching target app: ${appId} / ${activity}... Success (took ${endedAt - stepStartedAt}ms)`);
+            const message = `[Replay Engine] Launching target app: ${appId} / ${activity}... Success (took ${endedAt - stepStartedAt}ms)`;
+            consoleLogs.push(redactEvidence ? redactText(message) : message);
           }
-          const screenshotBase64 = await this.takeScreenshot(controller.signal).catch(() => undefined);
+          const screenshotBase64 = captureScreenshots
+            ? await this.takeScreenshot(controller.signal).catch(() => undefined)
+            : undefined;
           const afterContext = await this.client.command<string>('GET', '/context', undefined, controller.signal).catch(() => undefined);
           if (beforeContext !== afterContext || action.type === 'switchContext') contextTransitions.push({ step: index, before: beforeContext, after: afterContext });
           steps.push({ index, action, status: 'passed', startedAt: stepStartedAt, endedAt,
@@ -196,22 +207,33 @@ export class AndroidAutomationDriver implements AutomationDriver {
             evidence: screenshotBase64 ? { screenshotBase64 } : undefined, healing });
         } catch (error) {
           const endedAt = Date.now();
-          const screenshotBase64 = await this.takeScreenshot().catch(() => undefined);
+          const screenshotBase64 = captureScreenshots
+            ? await this.takeScreenshot().catch(() => undefined)
+            : undefined;
           steps.push({ index, action, status: controller.signal.aborted ? 'cancelled' : 'failed',
             startedAt: stepStartedAt, endedAt, durationMs: endedAt - stepStartedAt, retries: 0,
-            error: error instanceof Error ? error.message : String(error),
+            error: redactEvidence
+              ? redactText(error instanceof Error ? error.message : String(error))
+              : error instanceof Error ? error.message : String(error),
             evidence: screenshotBase64 ? { screenshotBase64 } : undefined, healing });
           if (!options?.continueOnFailure || controller.signal.aborted) break;
         }
       }
     } catch (error) {
-      runError = error instanceof Error ? error.message : String(error);
+      const message = error instanceof Error ? error.message : String(error);
+      runError = redactEvidence ? redactText(message) : message;
     } finally {
-      const source = this.isConnected() ? await this.getPageSource().catch(() => undefined) : undefined;
-      if (source) attachments.push({ name: 'android-final-hierarchy.xml', contentType: 'application/xml', data: source });
-      if (contextTransitions.length) attachments.push({ name: 'android-context-transitions.json', contentType: 'application/json', data: JSON.stringify(contextTransitions, null, 2) });
-      const logs = this.isConnected() ? await this.getDeviceLogs().catch(() => undefined) : undefined;
-      if (logs?.length) attachments.push({ name: 'android-logcat.json', contentType: 'application/json', data: JSON.stringify(logs, null, 2) });
+      const source = captureHierarchy && this.isConnected()
+        ? await this.getPageSource().catch(() => undefined)
+        : undefined;
+      if (source) attachments.push({ name: 'android-final-hierarchy.xml', contentType: 'application/xml',
+        data: redactEvidence ? redactMobileHierarchy(source) : source });
+      if (captureMetadata && contextTransitions.length) attachments.push({ name: 'android-context-transitions.json', contentType: 'application/json', data: JSON.stringify(contextTransitions, null, 2) });
+      const logs = captureLogs && this.isConnected()
+        ? await this.getDeviceLogs().catch(() => undefined)
+        : undefined;
+      if (logs?.length) attachments.push({ name: 'android-logcat.json', contentType: 'application/json',
+        data: JSON.stringify(redactEvidence ? redactStructuredValue(logs) : logs, null, 2) });
       if (ownsSession) await this.client.deleteSession().catch(() => undefined);
       clearTimeout(globalTimer);
       this.controller = null;

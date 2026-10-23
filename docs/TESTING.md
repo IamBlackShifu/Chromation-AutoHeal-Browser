@@ -7,7 +7,7 @@ npm.cmd run check
 ```
 
 This runs ESLint, all Jest suites in-band, TypeScript compilation, and Webpack.
-As of 14 August 2026 the gate passes 35 suites and 183 tests.
+As of 18 September 2026 the gate passes 45 suites and 242 tests.
 
 The interactive desktop smoke gate is separate:
 
@@ -15,11 +15,14 @@ The interactive desktop smoke gate is separate:
 npm.cmd run test:e2e:electron
 ```
 
-It launches Electron through Playwright with isolated application data, serves a
-deterministic local fixture, verifies the premium shell and Mobile device picker,
-then browses, records, edits a locator, saves, restarts, reopens through the UI,
-replays with automatic locator healing, verifies the report, and exercises script
-and report exports. It captures a failure screenshot when needed and closes the
+It launches Electron through Playwright with isolated application data, seeds a
+corrupt primary store with a recoverable backup, and verifies quarantine and
+recovery. It then serves a deterministic local fixture, verifies the premium
+shell and Mobile device picker, browses, records, edits a locator, saves,
+restarts, reopens through the UI, replays with automatic locator healing,
+verifies the report, and exercises script and report exports. Finally, it enables
+privacy mode through the real confirmation UI and verifies that browsing/run
+history, backups, and recoverable drafts are empty or absent before closing the
 application deterministically.
 
 ## Useful commands
@@ -38,9 +41,10 @@ the full `check` command passes.
 ## Coverage areas
 
 - Web driver, browser core, recording schema, recorder, replay/executor, healing,
-  reports, history, security, plugins, suites, and matrices.
+  reports, history, security/redaction, plugins, suites, and matrices.
 - Electron/renderer structural tests for core workflows, mobile UI, premium shell,
-  report workspace, and user guidance.
+  report workspace, atomic persistence/recovery, privacy mode, durable origin
+  policy, mobile evidence masking, and user guidance.
 - Android Appium client/driver commands, inspection, screenshot authoring, healing,
   IPC, Phase 1/2 workflows, Phase 2.1 infrastructure, streaming, and exporters.
 - Deterministic two-session port isolation and managed-process cleanup.

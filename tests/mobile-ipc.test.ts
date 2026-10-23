@@ -21,6 +21,8 @@ describe('Mobile Electron IPC bridge', () => {
     expect(main).toContain("command: 'npm install -g appium@3'");
     expect(main).toContain("command: 'appium driver install uiautomator2'");
     expect(main).toContain("dependsOn: appium.ok ? undefined : 'appium'");
+    expect(main).toContain('readJsonWithRecoverySync(mobileProfilesPath');
+    expect(main).toContain('writeJsonAtomicSync(mobileProfilesPath');
   });
 
   test('validates renderer origin, local Appium URL, platform, and device name', () => {
@@ -41,7 +43,8 @@ describe('Mobile Electron IPC bridge', () => {
 
   test('routes replay through the Android driver and preserves recording targets', () => {
     expect(main).toContain("ipcMain.handle('mobile-replay'");
-    expect(main).toContain('driver.execute(validated, request?.options)');
+    expect(main).toContain('driver.execute(validated, executionOptions)');
+    expect(main).toContain('const executionOptions = privacyModeEnabled');
     expect(main).toContain("ipcMain.handle('mobile-replay-status'");
     expect(main).toContain('mobileReplayBootstrap: true');
     expect(main).toContain("'appium:autoGrantPermissions': true");

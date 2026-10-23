@@ -44,6 +44,53 @@ describe('ScriptExecutor reliability', () => {
     expect(result.steps).toEqual([]);
   });
 
+  test('automatically masks sensitive fields in failure screenshots', async () => {
+    const automaticMask = { kind: 'automatic-mask' };
+    const configuredMask = { kind: 'configured-mask' };
+    const page = {
+      click: jest.fn().mockRejectedValue(new Error('Button is unavailable')),
+      locator: jest.fn((selector: string) => selector === '.private-profile'
+        ? configuredMask
+        : automaticMask),
+      screenshot: jest.fn().mockResolvedValue(Buffer.from('masked-screenshot')),
+      on: jest.fn(),
+    } as unknown as Page;
+    const context = {
+      newPage: jest.fn().mockResolvedValue(page),
+      close: jest.fn().mockResolvedValue(undefined),
+    } as unknown as BrowserContext;
+    const browser = {
+      newContext: jest.fn().mockResolvedValue(context),
+      close: jest.fn().mockResolvedValue(undefined),
+    } as unknown as Browser;
+    const executor = new ScriptExecutor({
+      launch: jest.fn().mockResolvedValue(browser),
+    } as unknown as BrowserType);
+
+    const result = await executor.execute([{
+      type: 'click', selector: '#missing', timestamp: Date.now(),
+    }], {
+      retryPolicy: { maxRetries: 0, retryDelayMs: 1 },
+      evidence: {
+        screenshotOnFailure: true,
+        captureConsoleLogs: false,
+        captureNetworkSummary: false,
+        captureDomSnapshotOnFailure: false,
+        redactSelectors: ['.private-profile'],
+      },
+    });
+
+    expect(result.steps[0].status).toBe('failed');
+    expect(page.locator).toHaveBeenCalledWith(expect.stringContaining('input[type="password" i]'));
+    expect(page.locator).toHaveBeenCalledWith('.private-profile');
+    expect(page.screenshot).toHaveBeenCalledWith({
+      type: 'png',
+      mask: [automaticMask, configuredMask],
+    });
+    expect(result.steps[0].evidence?.screenshotBase64)
+      .toBe(Buffer.from('masked-screenshot').toString('base64'));
+  });
+
   test('retries a failed locator action with a verified healed selector', async () => {
     const oldLocator = {
       waitFor: jest.fn().mockRejectedValue(new Error('Element not found')),

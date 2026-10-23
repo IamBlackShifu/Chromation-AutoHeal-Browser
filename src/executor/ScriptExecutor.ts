@@ -7,7 +7,12 @@ import {
 import { ActionType, RecordedAction } from '../recorder/Recorder';
 import { HealingEngine, HealingResult } from '../healing/HealingEngine';
 import { validateRecordedActions } from '../recording/RecordingSchema';
-import { redactDOMSnapshot, redactText, redactURL } from '../recording/Security';
+import {
+  redactDOMSnapshot,
+  redactText,
+  redactURL,
+  screenshotRedactionSelectors,
+} from '../recording/Security';
 import {
   AssertionPayload,
   EvidencePolicy,
@@ -184,7 +189,8 @@ export class ScriptExecutor {
         }
       }
     } catch (error) {
-      runError = error instanceof Error ? error.message : String(error);
+      const message = error instanceof Error ? error.message : String(error);
+      runError = resolved.evidence.redactSecrets === false ? message : redactText(message);
     } finally {
       clearTimeout(globalTimer);
       if (context) {
@@ -346,7 +352,9 @@ export class ScriptExecutor {
       durationMs: endedAt - startedAt,
       retries,
       healing,
-      error: lastError instanceof Error ? lastError.message : String(lastError),
+      error: stepOptions.evidence.redactSecrets === false
+        ? lastError instanceof Error ? lastError.message : String(lastError)
+        : redactText(lastError instanceof Error ? lastError.message : String(lastError)),
       evidence,
       expected: action.type === 'assert'
         ? String((action.metadata as AssertionPayload | undefined)?.expected ?? '')
@@ -837,7 +845,10 @@ export class ScriptExecutor {
 
     if (evidence.screenshotOnFailure) {
       try {
-        const mask = (evidence.redactSelectors ?? []).map((selector) => page.locator(selector));
+        const mask = screenshotRedactionSelectors(
+          evidence.redactSecrets,
+          evidence.redactSelectors
+        ).map((selector) => page.locator(selector));
         const screenshot = await page.screenshot({ type: 'png', mask });
         snapshot.screenshotBase64 = screenshot.toString('base64');
       } catch (error) {

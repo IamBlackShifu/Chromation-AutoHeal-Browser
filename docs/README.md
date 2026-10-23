@@ -14,6 +14,8 @@ verification evidence, limitations, and next work.
   device evidence.
 - [Runtime compatibility](COMPATIBILITY.md) — supported toolchain baseline.
 - [Plugin SDK](PLUGIN_SDK.md) — plugin manifest, sandbox, and extension model.
+- [U3 engineering log](U3_ENGINEERING_LOG.md) — privacy, persistence reliability,
+  resolved issues, verification evidence, and remaining gates.
 - [Testing](TESTING.md) — test commands and engineering verification.
 
 ## Future roadmap

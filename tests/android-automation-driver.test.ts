@@ -191,4 +191,66 @@ describe('AndroidAutomationDriver', () => {
     expect(client.command).toHaveBeenCalledWith('POST', '/context', { name: 'WEBVIEW_org.example' }, expect.any(AbortSignal));
     expect(client.command).toHaveBeenCalledWith('POST', '/orientation', { orientation: 'LANDSCAPE' }, expect.any(AbortSignal));
   });
+
+  test('suppresses screenshots, hierarchy, logs, and diagnostic attachments for private runs', async () => {
+    const client = {
+      getSessionId: jest.fn().mockReturnValue('session-1'),
+      command: jest.fn().mockResolvedValue('NATIVE_APP'),
+    } as unknown as AppiumClient;
+    const driver = new AndroidAutomationDriver({ capabilities: {
+      'appium:deviceName': 'Pixel', 'appium:appPackage': 'com.example.private',
+    } }, client);
+
+    const execution = await driver.execute([{
+      type: 'launchApp', selector: 'device', value: 'com.example.private', timestamp: 1,
+    }], {
+      evidence: {
+        screenshotOnFailure: false,
+        captureConsoleLogs: false,
+        captureNetworkSummary: false,
+        captureDomSnapshotOnFailure: false,
+      },
+    });
+
+    expect(execution.steps[0].status).toBe('passed');
+    expect(execution.steps[0].evidence).toBeUndefined();
+    expect(execution.consoleLogs).toEqual([]);
+    expect(execution.attachments).toEqual([]);
+    expect(client.command).not.toHaveBeenCalledWith('GET', '/screenshot', expect.anything(), expect.anything());
+    expect(client.command).not.toHaveBeenCalledWith('GET', '/source', expect.anything(), expect.anything());
+    expect(client.command).not.toHaveBeenCalledWith('POST', '/log', expect.anything(), expect.anything());
+  });
+
+  test('redacts secrets from Android capabilities, hierarchy, logs, and failures', async () => {
+    const client = {
+      getSessionId: jest.fn().mockReturnValue('session-1'),
+      command: jest.fn(async (method: string, commandPath: string) => {
+        if (method === 'GET' && commandPath === '/context') return 'NATIVE_APP';
+        if (method === 'GET' && commandPath === '/screenshot') return 'screen';
+        if (method === 'GET' && commandPath === '/source') {
+          return '<node resource-id="org.example:id/password" password="true" text="plain-password" />';
+        }
+        if (method === 'POST' && commandPath === '/log') {
+          return [{ level: 'INFO', message: 'authorization=Bearer live-token', accessToken: 'raw-token' }];
+        }
+        return null;
+      }),
+    } as unknown as AppiumClient;
+    const driver = new AndroidAutomationDriver({ capabilities: {
+      'appium:deviceName': 'Pixel',
+      'appium:appPackage': 'com.example.private',
+      'appium:accessToken': 'capability-token',
+    } }, client);
+
+    const execution = await driver.execute([{
+      type: 'launchApp', selector: 'device', value: 'com.example.private', timestamp: 1,
+    }]);
+    const serialized = JSON.stringify(execution);
+
+    expect(serialized).not.toContain('capability-token');
+    expect(serialized).not.toContain('plain-password');
+    expect(serialized).not.toContain('live-token');
+    expect(serialized).not.toContain('raw-token');
+    expect(serialized).toContain('[REDACTED]');
+  });
 });

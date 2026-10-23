@@ -24,6 +24,11 @@ const {
   parseRecordingDocument,
   validateRecordedAction,
 } = require('./dist/recording/RecordingSchema');
+const {
+  purgeJsonStoreSync,
+  readJsonWithRecoverySync,
+  writeJsonAtomicSync,
+} = require('./dist/storage/AtomicJsonStore');
 const { AndroidAutomationDriver } = require('./dist/drivers/appium/AndroidAutomationDriver');
 const { AppiumProcessManager } = require('./dist/drivers/appium/AppiumProcessManager');
 const { ScrcpyProcessManager } = require('./dist/mobile/streaming/ScrcpyProcessManager');
@@ -34,7 +39,22 @@ const { AndroidInputEventParser } = require('./dist/mobile/recording/AndroidInpu
 let mainWindow;
 let browserView;
 const MAX_RECORDING_FILE_BYTES = 10 * 1024 * 1024;
+const MAX_RUN_HISTORY_FILE_BYTES = 25 * 1024 * 1024;
+const MAX_RUN_HISTORY_ENTRIES = 500;
+const MAX_BROWSING_HISTORY_FILE_BYTES = 5 * 1024 * 1024;
+const MAX_BROWSING_HISTORY_ENTRIES = 5000;
+const MAX_MOBILE_PROFILES_FILE_BYTES = 1024 * 1024;
+const MAX_MOBILE_PROFILES = 100;
+const MAX_ENVIRONMENT_VAULT_FILE_BYTES = 2 * 1024 * 1024;
+const MAX_ENVIRONMENT_VARIABLES = 256;
+const MAX_ORIGIN_PERMISSION_FILE_BYTES = 512 * 1024;
+const MAX_ORIGIN_PERMISSION_ENTRIES = 200;
+const ALLOWED_GUEST_PERMISSIONS = new Set([
+  'clipboard-read', 'clipboard-sanitized-write', 'display-capture', 'fullscreen',
+  'geolocation', 'media', 'midi', 'midiSysex', 'notifications', 'pointerLock',
+]);
 const originPermissions = new Map();
+let privacyModeEnabled = false;
 let mobileDriver = null;
 let mobileReplayDriver = null;
 let mobileTouchCapture = null;
@@ -46,7 +66,7 @@ const androidDeviceDiscovery = new AndroidDeviceDiscovery();
 
 function assertTrustedRenderer(event) {
   if (!mainWindow || event.sender !== mainWindow.webContents) {
-    throw new Error('Mobile request did not originate from this browser window');
+    throw new Error('Request did not originate from this browser window');
   }
 }
 
@@ -284,9 +304,15 @@ app.on('will-quit', () => {
 });
 
 function configureGuestPermissions() {
+  hydrateOriginPermissions();
   const guestSession = session.fromPartition('persist:chromation');
-  const isAllowed = (origin, permission) =>
-    originPermissions.get(origin)?.has(permission) === true;
+  const isAllowed = (origin, permission) => {
+    try {
+      return originPermissions.get(new URL(origin).origin)?.has(permission) === true;
+    } catch {
+      return false;
+    }
+  };
   guestSession.setPermissionCheckHandler((_webContents, permission, requestingOrigin) =>
     isAllowed(requestingOrigin, permission)
   );
@@ -323,6 +349,59 @@ function readRecordingFile(filePath) {
     throw new Error('Recording file must be a non-empty JSON file no larger than 10 MB');
   }
   return fs.readFileSync(filePath, 'utf8');
+}
+
+function recordingStoreOptions() {
+  return {
+    maxBytes: MAX_RECORDING_FILE_BYTES,
+    validate: value => { parseRecordingDocument(value); },
+  };
+}
+
+function runHistoryStoreOptions(defaultValue) {
+  return {
+    maxBytes: MAX_RUN_HISTORY_FILE_BYTES,
+    ...(defaultValue === undefined ? {} : { defaultValue }),
+    validate: value => {
+      if (!Array.isArray(value)) throw new Error('Run history must be an array');
+      if (value.length > MAX_RUN_HISTORY_ENTRIES) {
+        throw new Error(`Run history cannot contain more than ${MAX_RUN_HISTORY_ENTRIES} entries`);
+      }
+    },
+  };
+}
+
+function summarizeStorageRecovery(result) {
+  return {
+    source: result.source,
+    recovered: result.recovered,
+    recoveryReason: result.recoveryReason,
+  };
+}
+
+function logStorageRecovery(label, result) {
+  if (!result.recovered) return;
+  console.warn(`${label} recovered from ${result.source}: ${result.recoveryReason}`);
+  for (const quarantinedPath of result.quarantinedPaths) {
+    console.warn(`${label} quarantined corrupt data: ${quarantinedPath}`);
+  }
+}
+
+function readSavedRecording(filePath) {
+  const result = readJsonWithRecoverySync(filePath, recordingStoreOptions());
+  logStorageRecovery(`Recording ${path.basename(filePath)}`, result);
+  return {
+    recording: parseRecordingDocument(result.value),
+    storageRecovery: summarizeStorageRecovery(result),
+  };
+}
+
+function restoreOrphanedRecordingBackups() {
+  for (const backupName of fs.readdirSync(recordingsDir).filter(name => name.endsWith('.json.bak'))) {
+    const filename = backupName.slice(0, -4);
+    const filePath = resolveRecordingPath(filename);
+    if (!fs.existsSync(filePath)) readSavedRecording(filePath);
+  }
 }
 
 app.on('web-contents-created', (_event, contents) => {
@@ -430,22 +509,152 @@ const recordingsDir = path.join(app.getPath('userData'), 'saved-recordings');
 const runHistoryPath = path.join(app.getPath('userData'), 'run-history.json');
 const mobileProfilesPath = path.join(app.getPath('userData'), 'mobile-profiles.json');
 const browsingHistoryPath = path.join(app.getPath('userData'), 'browsing-history.json');
+const environmentVaultPath = path.join(app.getPath('userData'), 'environment-vault.json');
+const originPermissionsPath = path.join(app.getPath('userData'), 'origin-permissions.json');
+
+function browsingHistoryStoreOptions(defaultValue) {
+  return {
+    maxBytes: MAX_BROWSING_HISTORY_FILE_BYTES,
+    ...(defaultValue === undefined ? {} : { defaultValue }),
+    validate: value => {
+      if (!Array.isArray(value)) throw new Error('Browsing history must be an array');
+      if (value.length > MAX_BROWSING_HISTORY_ENTRIES) {
+        throw new Error(`Browsing history cannot contain more than ${MAX_BROWSING_HISTORY_ENTRIES} entries`);
+      }
+      for (const entry of value) {
+        if (!entry || typeof entry !== 'object' || typeof entry.id !== 'string' ||
+          typeof entry.url !== 'string' || !/^https?:\/\//i.test(entry.url) ||
+          typeof entry.title !== 'string' || entry.title.length > 300 ||
+          !Number.isFinite(entry.timestamp)) {
+          throw new Error('Browsing history contains an invalid entry');
+        }
+      }
+    },
+  };
+}
+
+function mobileProfilesStoreOptions(defaultValue) {
+  return {
+    maxBytes: MAX_MOBILE_PROFILES_FILE_BYTES,
+    ...(defaultValue === undefined ? {} : { defaultValue }),
+    validate: value => {
+      if (!Array.isArray(value)) throw new Error('Mobile profiles must be an array');
+      if (value.length > MAX_MOBILE_PROFILES) {
+        throw new Error(`Mobile profiles cannot contain more than ${MAX_MOBILE_PROFILES} entries`);
+      }
+      value.forEach(validateMobileProfile);
+    },
+  };
+}
+
+function environmentVaultStoreOptions(defaultValue) {
+  return {
+    maxBytes: MAX_ENVIRONMENT_VAULT_FILE_BYTES,
+    ...(defaultValue === undefined ? {} : { defaultValue }),
+    validate: value => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        throw new Error('Environment vault must be an object');
+      }
+      const entries = Object.entries(value);
+      if (entries.length > MAX_ENVIRONMENT_VARIABLES) {
+        throw new Error(`Environment vault cannot contain more than ${MAX_ENVIRONMENT_VARIABLES} entries`);
+      }
+      for (const [name, encrypted] of entries) {
+        validateEnvironmentName(name);
+        if (typeof encrypted !== 'string' || encrypted.length > 128 * 1024 ||
+          !/^[A-Za-z0-9+/]+={0,2}$/.test(encrypted)) {
+          throw new Error(`Environment variable ${name} has invalid encrypted storage`);
+        }
+      }
+    },
+  };
+}
+
+function originPermissionStoreOptions(defaultValue) {
+  return {
+    maxBytes: MAX_ORIGIN_PERMISSION_FILE_BYTES,
+    ...(defaultValue === undefined ? {} : { defaultValue }),
+    validate: value => {
+      if (!Array.isArray(value)) throw new Error('Origin permissions must be an array');
+      if (value.length > MAX_ORIGIN_PERMISSION_ENTRIES) {
+        throw new Error(`Origin permissions cannot contain more than ${MAX_ORIGIN_PERMISSION_ENTRIES} origins`);
+      }
+      for (const entry of value) {
+        if (!entry || typeof entry !== 'object' || typeof entry.origin !== 'string' ||
+          new URL(entry.origin).origin !== entry.origin || !Array.isArray(entry.permissions) ||
+          entry.permissions.some(permission => !ALLOWED_GUEST_PERMISSIONS.has(permission))) {
+          throw new Error('Origin permissions contain an invalid policy');
+        }
+      }
+    },
+  };
+}
+
+function readBrowsingHistoryStore() {
+  const result = readJsonWithRecoverySync(browsingHistoryPath, browsingHistoryStoreOptions([]));
+  logStorageRecovery('Browsing history', result);
+  return result;
+}
 
 function readBrowsingHistory() {
-  if (!fs.existsSync(browsingHistoryPath)) return [];
-  const parsed = JSON.parse(fs.readFileSync(browsingHistoryPath, 'utf8'));
-  return Array.isArray(parsed) ? parsed : [];
+  return readBrowsingHistoryStore().value;
 }
 
 function writeBrowsingHistory(entries) {
-  fs.writeFileSync(browsingHistoryPath, JSON.stringify(entries.slice(0, 5000), null, 2));
+  writeJsonAtomicSync(
+    browsingHistoryPath,
+    entries.slice(0, MAX_BROWSING_HISTORY_ENTRIES),
+    browsingHistoryStoreOptions()
+  );
 }
-const environmentVaultPath = path.join(app.getPath('userData'), 'environment-vault.json');
+
+function resetJsonStore(filePath, value, options) {
+  purgeJsonStoreSync(filePath);
+  writeJsonAtomicSync(filePath, value, options);
+}
+
+function clearPrivateEvidenceStores() {
+  resetJsonStore(browsingHistoryPath, [], browsingHistoryStoreOptions());
+  resetJsonStore(runHistoryPath, [], runHistoryStoreOptions());
+}
+
+function readEnvironmentVaultStore() {
+  const result = readJsonWithRecoverySync(environmentVaultPath, environmentVaultStoreOptions({}));
+  logStorageRecovery('Environment vault', result);
+  return result;
+}
 
 function readEnvironmentVault() {
-  if (!fs.existsSync(environmentVaultPath)) return {};
-  const stored = JSON.parse(fs.readFileSync(environmentVaultPath, 'utf8'));
-  return stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {};
+  return readEnvironmentVaultStore().value;
+}
+
+function readMobileProfilesStore() {
+  const result = readJsonWithRecoverySync(mobileProfilesPath, mobileProfilesStoreOptions([]));
+  logStorageRecovery('Mobile profiles', result);
+  return result;
+}
+
+function readOriginPermissionsStore() {
+  const result = readJsonWithRecoverySync(originPermissionsPath, originPermissionStoreOptions([]));
+  logStorageRecovery('Origin permissions', result);
+  return result;
+}
+
+function hydrateOriginPermissions() {
+  const result = readOriginPermissionsStore();
+  originPermissions.clear();
+  for (const entry of result.value) {
+    originPermissions.set(entry.origin, new Set(entry.permissions));
+  }
+  return result;
+}
+
+function persistOriginPermissions() {
+  const serialized = [...originPermissions.entries()]
+    .filter(([, permissions]) => permissions.size > 0)
+    .map(([origin, permissions]) => ({ origin, permissions: [...permissions].sort() }))
+    .sort((a, b) => a.origin.localeCompare(b.origin));
+  writeJsonAtomicSync(originPermissionsPath, serialized, originPermissionStoreOptions());
 }
 
 function validateEnvironmentName(name) {
@@ -464,8 +673,11 @@ ipcMain.handle('set-environment-variable', async (_event, { name, value }) => {
       throw new Error('Operating-system credential encryption is not available');
     }
     const vault = readEnvironmentVault();
+    if (!Object.prototype.hasOwnProperty.call(vault, name) && Object.keys(vault).length >= MAX_ENVIRONMENT_VARIABLES) {
+      throw new Error(`Environment vault cannot contain more than ${MAX_ENVIRONMENT_VARIABLES} entries`);
+    }
     vault[name] = safeStorage.encryptString(value).toString('base64');
-    fs.writeFileSync(environmentVaultPath, JSON.stringify(vault, null, 2), { mode: 0o600 });
+    writeJsonAtomicSync(environmentVaultPath, vault, environmentVaultStoreOptions());
     return { success: true };
   } catch (error) {
     return { success: false, error: error.message };
@@ -491,19 +703,42 @@ ipcMain.handle('list-environment-variables', async () => ({
   names: Object.keys(readEnvironmentVault()).sort(),
 }));
 
-ipcMain.handle('set-origin-permission', async (_event, { origin, permission, allowed }) => {
+ipcMain.handle('set-origin-permission', async (event, { origin, permission, allowed }) => {
   try {
+    assertTrustedRenderer(event);
     const normalizedOrigin = new URL(origin).origin;
-    if (typeof permission !== 'string' || permission.length > 100 || typeof allowed !== 'boolean') {
+    if (!ALLOWED_GUEST_PERMISSIONS.has(permission) || typeof allowed !== 'boolean') {
       throw new Error('Invalid permission request');
     }
     const permissions = originPermissions.get(normalizedOrigin) ?? new Set();
     if (allowed) permissions.add(permission);
     else permissions.delete(permission);
-    originPermissions.set(normalizedOrigin, permissions);
+    if (permissions.size) originPermissions.set(normalizedOrigin, permissions);
+    else originPermissions.delete(normalizedOrigin);
+    persistOriginPermissions();
     return { success: true };
   } catch (error) {
     return { success: false, error: error.message };
+  }
+});
+
+ipcMain.handle('get-privacy-mode', async (event) => {
+  assertTrustedRenderer(event);
+  return { success: true, enabled: privacyModeEnabled };
+});
+
+ipcMain.handle('set-privacy-mode', async (event, request) => {
+  try {
+    assertTrustedRenderer(event);
+    if (typeof request?.enabled !== 'boolean' ||
+      (request.clearExisting !== undefined && typeof request.clearExisting !== 'boolean')) {
+      throw new Error('Invalid privacy-mode request');
+    }
+    if (request.enabled && request.clearExisting) clearPrivateEvidenceStores();
+    privacyModeEnabled = request.enabled;
+    return { success: true, enabled: privacyModeEnabled, cleared: Boolean(request.enabled && request.clearExisting) };
+  } catch (error) {
+    return { success: false, enabled: privacyModeEnabled, error: error.message };
   }
 });
 
@@ -535,7 +770,7 @@ ipcMain.handle('save-recording', async (event, { name, actions, target }) => {
     
     const recording = createRecordingDocument(name, actions, timestamp, target);
     
-    fs.writeFileSync(filePath, JSON.stringify(recording, null, 2));
+    writeJsonAtomicSync(filePath, recording, recordingStoreOptions());
     console.log('Recording saved:', filePath);
     
     return { success: true, filename, path: filePath };
@@ -548,18 +783,19 @@ ipcMain.handle('save-recording', async (event, { name, actions, target }) => {
 // Load all saved recordings
 ipcMain.handle('load-recordings', async () => {
   try {
+    restoreOrphanedRecordingBackups();
     const files = fs.readdirSync(recordingsDir);
     const recordings = files
       .filter(file => file.endsWith('.json'))
       .map(file => {
         try {
           const filePath = path.join(recordingsDir, file);
-          const content = readRecordingFile(filePath);
-          const data = parseRecordingDocument(JSON.parse(content));
+          const { recording: data, storageRecovery } = readSavedRecording(filePath);
           return {
             filename: file,
             path: filePath,
-            ...data
+            ...data,
+            storageRecovery,
           };
         } catch (error) {
           console.error(`Failed to load recording ${file}:`, error);
@@ -581,11 +817,10 @@ ipcMain.handle('load-recordings', async () => {
 ipcMain.handle('load-recording', async (event, filename) => {
   try {
     const filePath = resolveRecordingPath(filename);
-    const content = readRecordingFile(filePath);
-    const recording = parseRecordingDocument(JSON.parse(content));
+    const { recording, storageRecovery } = readSavedRecording(filePath);
     
     console.log('Recording loaded:', filename);
-    return { success: true, recording };
+    return { success: true, recording, storageRecovery };
   } catch (error) {
     console.error('Failed to load recording:', error);
     return { success: false, error: error.message };
@@ -594,9 +829,9 @@ ipcMain.handle('load-recording', async (event, filename) => {
 
 ipcMain.handle('save-run-history', async (event, serializedHistory) => {
   try {
+    if (privacyModeEnabled) return { success: true, skipped: true, privacyMode: true };
     const parsed = JSON.parse(String(serializedHistory || '[]'));
-    if (!Array.isArray(parsed)) throw new Error('Run history must be an array');
-    fs.writeFileSync(runHistoryPath, JSON.stringify(parsed, null, 2));
+    writeJsonAtomicSync(runHistoryPath, parsed, runHistoryStoreOptions());
     return { success: true };
   } catch (error) {
     console.error('Failed to save run history:', error);
@@ -606,10 +841,16 @@ ipcMain.handle('save-run-history', async (event, serializedHistory) => {
 
 ipcMain.handle('load-run-history', async () => {
   try {
-    if (!fs.existsSync(runHistoryPath)) return { success: true, history: '[]' };
-    const history = fs.readFileSync(runHistoryPath, 'utf8');
-    JSON.parse(history);
-    return { success: true, history };
+    if (privacyModeEnabled) {
+      return { success: true, history: '[]', privacyMode: true };
+    }
+    const result = readJsonWithRecoverySync(runHistoryPath, runHistoryStoreOptions([]));
+    logStorageRecovery('Run history', result);
+    return {
+      success: true,
+      history: JSON.stringify(result.value),
+      storageRecovery: summarizeStorageRecovery(result),
+    };
   } catch (error) {
     console.error('Failed to load run history:', error);
     return { success: false, error: error.message, history: '[]' };
@@ -618,6 +859,7 @@ ipcMain.handle('load-run-history', async () => {
 
 ipcMain.handle('add-browsing-history', async (event, visit) => {
   try {
+    if (privacyModeEnabled) return { success: true, skipped: true, privacyMode: true };
     const url = String(visit?.url || '').trim();
     if (!/^https?:\/\//i.test(url)) return { success: false, error: 'Only HTTP(S) visits can be stored' };
     const entries = readBrowsingHistory();
@@ -646,7 +888,13 @@ ipcMain.handle('add-browsing-history', async (event, visit) => {
 
 ipcMain.handle('load-browsing-history', async () => {
   try {
-    return { success: true, entries: readBrowsingHistory() };
+    if (privacyModeEnabled) return { success: true, entries: [], privacyMode: true };
+    const result = readBrowsingHistoryStore();
+    return {
+      success: true,
+      entries: result.value,
+      storageRecovery: summarizeStorageRecovery(result),
+    };
   } catch (error) {
     return { success: false, error: error.message, entries: [] };
   }
@@ -664,7 +912,7 @@ ipcMain.handle('delete-browsing-history-entry', async (event, id) => {
 
 ipcMain.handle('clear-browsing-history', async () => {
   try {
-    writeBrowsingHistory([]);
+    resetJsonStore(browsingHistoryPath, [], browsingHistoryStoreOptions());
     return { success: true };
   } catch (error) {
     return { success: false, error: error.message };
@@ -672,26 +920,60 @@ ipcMain.handle('clear-browsing-history', async () => {
 });
 
 ipcMain.handle('get-app-diagnostics', async () => {
-  const paths = {
-    userData: app.getPath('userData'),
-    recordings: recordingsDir,
-    runHistory: runHistoryPath,
-    browsingHistory: browsingHistoryPath,
-  };
-  const stores = Object.entries(paths).map(([name, target]) => {
+  const inspectDirectory = (name, target) => {
     try {
       const stat = fs.existsSync(target) ? fs.statSync(target) : null;
       return { name, path: target, exists: Boolean(stat), bytes: stat?.isFile() ? stat.size : 0, healthy: true };
     } catch (error) {
       return { name, path: target, exists: false, bytes: 0, healthy: false, error: error.message };
     }
-  });
+  };
+  const inspectJsonStore = (name, target, reader) => {
+    try {
+      const result = reader();
+      const stat = fs.statSync(target);
+      return {
+        name, path: target, exists: true, bytes: stat.size, healthy: true,
+        recovered: result.recovered, source: result.source,
+        recoveryReason: result.recoveryReason,
+      };
+    } catch (error) {
+      return { name, path: target, exists: fs.existsSync(target), bytes: 0, healthy: false, error: error.message };
+    }
+  };
+  const inspectRecordings = () => {
+    try {
+      restoreOrphanedRecordingBackups();
+      const files = fs.readdirSync(recordingsDir).filter(name => name.endsWith('.json'));
+      let bytes = 0;
+      let recovered = false;
+      for (const name of files) {
+        const target = path.join(recordingsDir, name);
+        bytes += fs.statSync(target).size;
+        recovered = readSavedRecording(target).storageRecovery.recovered || recovered;
+      }
+      return { name: 'recordings', path: recordingsDir, exists: true, bytes, healthy: true, recovered };
+    } catch (error) {
+      return { name: 'recordings', path: recordingsDir, exists: true, bytes: 0, healthy: false, error: error.message };
+    }
+  };
+  const stores = [
+    inspectDirectory('userData', app.getPath('userData')),
+    inspectRecordings(),
+    inspectJsonStore('runHistory', runHistoryPath, () => readJsonWithRecoverySync(runHistoryPath, runHistoryStoreOptions([]))),
+    inspectJsonStore('browsingHistory', browsingHistoryPath, readBrowsingHistoryStore),
+    inspectJsonStore('mobileProfiles', mobileProfilesPath, readMobileProfilesStore),
+    inspectJsonStore('environmentVault', environmentVaultPath, readEnvironmentVaultStore),
+    inspectJsonStore('originPermissions', originPermissionsPath, readOriginPermissionsStore),
+  ];
   return {
     success: true,
     versions: { app: app.getVersion(), electron: process.versions.electron, chrome: process.versions.chrome, node: process.versions.node },
     platform: { os: process.platform, architecture: process.arch },
     stores,
-    permissions: [...originPermissions.entries()].map(([origin, permission]) => ({ origin, permission })),
+    permissions: [...originPermissions.entries()].flatMap(([origin, permissions]) =>
+      [...permissions].sort().map(permission => ({ origin, permission }))),
+    privacyModeEnabled,
     safeStorageAvailable: safeStorage.isEncryptionAvailable(),
     timestamp: Date.now(),
   };
@@ -814,7 +1096,14 @@ ipcMain.handle('mobile-preflight', async (event, request) => {
 
 ipcMain.handle('mobile-load-profiles', async (event) => {
   assertTrustedRenderer(event);
-  try { return { success: true, profiles: fs.existsSync(mobileProfilesPath) ? JSON.parse(fs.readFileSync(mobileProfilesPath, 'utf8')) : [] }; }
+  try {
+    const result = readMobileProfilesStore();
+    return {
+      success: true,
+      profiles: result.value,
+      storageRecovery: summarizeStorageRecovery(result),
+    };
+  }
   catch (error) { return { success: false, error: error.message, profiles: [] }; }
 });
 
@@ -822,9 +1111,9 @@ ipcMain.handle('mobile-save-profile', async (event, value) => {
   try {
     assertTrustedRenderer(event);
     const profile = validateMobileProfile(value);
-    const profiles = fs.existsSync(mobileProfilesPath) ? JSON.parse(fs.readFileSync(mobileProfilesPath, 'utf8')) : [];
+    const profiles = readMobileProfilesStore().value;
     const updated = [...profiles.filter((item) => item.id !== profile.id), profile].sort((a, b) => a.name.localeCompare(b.name));
-    fs.writeFileSync(mobileProfilesPath, JSON.stringify(updated, null, 2));
+    writeJsonAtomicSync(mobileProfilesPath, updated, mobileProfilesStoreOptions());
     return { success: true, profile, profiles: updated };
   } catch (error) { return { success: false, error: error.message }; }
 });
@@ -832,9 +1121,9 @@ ipcMain.handle('mobile-save-profile', async (event, value) => {
 ipcMain.handle('mobile-delete-profile', async (event, profileId) => {
   try {
     assertTrustedRenderer(event);
-    const profiles = fs.existsSync(mobileProfilesPath) ? JSON.parse(fs.readFileSync(mobileProfilesPath, 'utf8')) : [];
+    const profiles = readMobileProfilesStore().value;
     const updated = profiles.filter((item) => item.id !== String(profileId));
-    fs.writeFileSync(mobileProfilesPath, JSON.stringify(updated, null, 2));
+    writeJsonAtomicSync(mobileProfilesPath, updated, mobileProfilesStoreOptions());
     return { success: true, profiles: updated };
   } catch (error) { return { success: false, error: error.message }; }
 });
@@ -946,7 +1235,22 @@ ipcMain.handle('mobile-replay', async (event, request) => {
     }
     if (['automatic', 'ask', 'report-only'].includes(request?.healingPolicy)) driver.setHealingApprovalPolicy(request.healingPolicy);
     mobileReplayDriver = driver;
-    const execution = await driver.execute(validated, request?.options);
+    const executionOptions = privacyModeEnabled
+      ? {
+        ...(request?.options || {}),
+        evidence: {
+          ...(request?.options?.evidence || {}),
+          screenshotOnFailure: false,
+          captureConsoleLogs: false,
+          captureNetworkSummary: false,
+          captureDomSnapshotOnFailure: false,
+          captureNetworkBodies: false,
+          captureTrace: false,
+          captureVideo: false,
+        },
+      }
+      : request?.options;
+    const execution = await driver.execute(validated, executionOptions);
     const healingHistory = driver.getHealingHistory();
     if (driver === mobileDriver) {
       return { success: true, execution, healingHistory, sessionReused: true, status: await driver.getLiveStatus() };
@@ -1013,15 +1317,18 @@ ipcMain.handle('rename-recording', async (event, { filename, name }) => {
     const cleanName = String(name || '').trim();
     if (!cleanName || cleanName.length > 100) throw new Error('Recording name must be between 1 and 100 characters');
     const sourcePath = resolveRecordingPath(filename);
-    const recording = parseRecordingDocument(JSON.parse(readRecordingFile(sourcePath)));
+    const { recording } = readSavedRecording(sourcePath);
     const timestamp = Number(recording.timestamp) || Date.now();
     const workspacePrefix = recording.target?.platform === 'android' || recording.target?.platform === 'ios' ? 'mobile' : 'web';
     const targetFilename = `${workspacePrefix}_suite_${cleanName.replace(/^(web|mobile)_suite_/i, '').replace(/[^a-z0-9]/gi, '_')}_${timestamp}.json`;
     const targetPath = path.join(recordingsDir, targetFilename);
     if (targetPath !== sourcePath && fs.existsSync(targetPath)) throw new Error('A recording with that name already exists');
     const updated = { ...recording, name: cleanName, updatedAt: new Date().toISOString() };
-    fs.writeFileSync(targetPath, JSON.stringify(updated, null, 2));
-    if (targetPath !== sourcePath) fs.unlinkSync(sourcePath);
+    writeJsonAtomicSync(targetPath, updated, recordingStoreOptions());
+    if (targetPath !== sourcePath) {
+      fs.unlinkSync(sourcePath);
+      if (fs.existsSync(`${sourcePath}.bak`)) fs.unlinkSync(`${sourcePath}.bak`);
+    }
     return { success: true, filename: targetFilename, recording: updated };
   } catch (error) {
     console.error('Failed to rename recording:', error);
@@ -1034,6 +1341,7 @@ ipcMain.handle('delete-recording', async (event, filename) => {
   try {
     const filePath = resolveRecordingPath(filename);
     fs.unlinkSync(filePath);
+    if (fs.existsSync(`${filePath}.bak`)) fs.unlinkSync(`${filePath}.bak`);
     
     console.log('Recording deleted:', filename);
     return { success: true };
@@ -1067,7 +1375,7 @@ ipcMain.handle('import-recording', async () => {
     const timestamp = Date.now();
     const filename = `${recording.name.replace(/[^a-z0-9]/gi, '_')}_${timestamp}.json`;
     const destPath = resolveRecordingPath(filename);
-    fs.writeFileSync(destPath, JSON.stringify(recording, null, 2));
+    writeJsonAtomicSync(destPath, recording, recordingStoreOptions());
     
     console.log('Recording imported:', filename);
     return { success: true, recording, filename };

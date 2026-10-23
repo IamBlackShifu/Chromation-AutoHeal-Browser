@@ -28,6 +28,9 @@ async function run() {
     throw new Error(`Packaged Electron executable does not exist: ${executablePath}`);
   }
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'chromation-e2e-'));
+  const seededRunHistoryPath = path.join(userData, 'run-history.json');
+  fs.writeFileSync(seededRunHistoryPath, '{malformed-run-history', 'utf8');
+  fs.writeFileSync(`${seededRunHistoryPath}.bak`, '[]\n', 'utf8');
   const fixture = http.createServer((request, response) => {
     if (request.url === '/download') {
       response.writeHead(200, { 'content-type': 'text/plain', 'content-disposition': 'attachment; filename="fixture-download.txt"' });
@@ -65,6 +68,12 @@ async function run() {
     page.on('pageerror', (error) => rendererErrors.push(error.message));
     await page.waitForLoadState('domcontentloaded');
     assert.match(await page.title(), /OmniFlow QA/i);
+    await page.evaluate(() => window.chromationAPI.ipc.invoke('load-run-history'));
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(seededRunHistoryPath, 'utf8')), []);
+    const corruptionRecoveryPassed = fs.readdirSync(userData)
+      .some((name) => name.startsWith('run-history.json.corrupt-'));
+    assert.strictEqual(corruptionRecoveryPassed, true, 'Corrupt run history was not quarantined and recovered');
+    checkpoint('corrupt persistence recovered');
     await page.locator('#workspace-launcher:not(.hidden)').waitFor({ state: 'visible' });
     assert.strictEqual(await page.locator('[data-launch-workspace]').count(), 2, 'Workspace launcher must offer two targets');
     await page.locator('[data-launch-workspace="mobile"]').click();
@@ -301,7 +310,31 @@ async function run() {
     assert.strictEqual(recoveredHistory.at(-1).status, 'passed', 'Corrected replay was not retained as the latest passing run');
     checkpoint('failed step corrected through remediation and recovered');
 
-    process.stdout.write(`${JSON.stringify({ status: 'passed', packaged: Boolean(packagedExecutable), shell: true, mobileDrawer: true, recorderDrawer: true, fixtureBrowse: true, popupRecovery: true, downloadRecovery: true, navigationRecovery: true, rendererCrashRecovery: true, permissionRecovery: true, inspectorAuthoring: true, recordEditSaveRestartReopen: true, replay: true, healing: true, report: true, failureEvidence: true, recovery: true, scriptExport: true, reportExport: true, actionCount: reopened.recording.actions.length })}\n`);
+    await page.evaluate(() => window.chromationAPI.ipc.invoke('add-browsing-history', {
+      url: 'https://private.example.test/', title: 'Private fixture', timestamp: Date.now(),
+    }));
+    await page.locator('[data-action="settings"]').click();
+    await page.locator('#ui-privacy-mode').waitFor({ state: 'visible' });
+    await page.locator('#ui-privacy-mode').check();
+    await page.locator('#confirmation-sheet:not(.hidden)').waitFor({ state: 'visible' });
+    await page.locator('#confirmation-accept').click();
+    await page.waitForFunction(() => document.documentElement.dataset.privacyMode === 'true');
+    const privateState = await page.evaluate(async () => ({
+      browsing: await window.chromationAPI.ipc.invoke('load-browsing-history'),
+      runs: await window.chromationAPI.ipc.invoke('load-run-history'),
+      drafts: localStorage.getItem('omniflow-workspace-drafts'),
+    }));
+    assert.deepStrictEqual(privateState.browsing.entries, []);
+    assert.strictEqual(privateState.browsing.privacyMode, true);
+    assert.strictEqual(privateState.runs.history, '[]');
+    assert.strictEqual(privateState.runs.privacyMode, true);
+    assert.strictEqual(privateState.drafts, null);
+    for (const filename of ['browsing-history.json', 'browsing-history.json.bak', 'run-history.json', 'run-history.json.bak']) {
+      assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(userData, filename), 'utf8')), []);
+    }
+    checkpoint('privacy mode cleared and suppressed retained evidence');
+
+    process.stdout.write(`${JSON.stringify({ status: 'passed', packaged: Boolean(packagedExecutable), shell: true, mobileDrawer: true, recorderDrawer: true, fixtureBrowse: true, popupRecovery: true, downloadRecovery: true, navigationRecovery: true, rendererCrashRecovery: true, permissionRecovery: true, corruptionRecovery: corruptionRecoveryPassed, privacyMode: true, inspectorAuthoring: true, recordEditSaveRestartReopen: true, replay: true, healing: true, report: true, failureEvidence: true, recovery: true, scriptExport: true, reportExport: true, actionCount: reopened.recording.actions.length })}\n`);
   } catch (error) {
     if (page) await page.screenshot({ path: path.join(os.tmpdir(), 'chromation-electron-smoke-failure.png'), fullPage: true }).catch(() => undefined);
     throw error;

@@ -41,10 +41,113 @@ const workspaceSessionStores = {
   mobile: { actions: [], target: { platform: 'android', mode: 'native', automationName: 'UiAutomator2' } },
 };
 const workspaceSavedSignatures = { web: '[]', mobile: '[]' };
+const PRIVACY_MODE_KEY = 'omniflow-privacy-mode';
+const MOBILE_EVIDENCE_MASKS_KEY = 'omniflow-mobile-evidence-mask-bounds';
+
+function isPrivacyModeEnabled() {
+  return localStorage.getItem(PRIVACY_MODE_KEY) === 'true';
+}
+
+function applyPrivacyModePresentation() {
+  const enabled = isPrivacyModeEnabled();
+  document.documentElement.classList.toggle('privacy-mode', enabled);
+  document.documentElement.dataset.privacyMode = String(enabled);
+}
+
+async function initializePrivacyMode() {
+  const enabled = isPrivacyModeEnabled();
+  const result = await ipcRenderer.invoke('set-privacy-mode', { enabled, clearExisting: false });
+  if (!result?.success) throw new Error(result?.error || 'Privacy mode could not be initialized');
+  applyPrivacyModePresentation();
+}
+
+function normalizeMobileEvidenceMaskBounds(value) {
+  if (!Array.isArray(value)) throw new Error('Mobile evidence masks must be a JSON array');
+  if (value.length > 50) throw new Error('Mobile evidence masks cannot contain more than 50 rectangles');
+  return value.map((item, index) => {
+    const bounds = {
+      x: Number(item?.x), y: Number(item?.y),
+      width: Number(item?.width), height: Number(item?.height),
+    };
+    if (!Object.values(bounds).every(Number.isFinite) || bounds.x < 0 || bounds.y < 0 ||
+      bounds.width <= 0 || bounds.height <= 0 || Object.values(bounds).some(number => number > 100000)) {
+      throw new Error(`Mobile evidence mask ${index + 1} is invalid`);
+    }
+    return bounds;
+  });
+}
+
+function getConfiguredMobileEvidenceMaskBounds() {
+  try {
+    return normalizeMobileEvidenceMaskBounds(JSON.parse(localStorage.getItem(MOBILE_EVIDENCE_MASKS_KEY) || '[]'));
+  } catch (error) {
+    console.warn('Ignoring invalid stored mobile evidence masks:', error);
+    return [];
+  }
+}
+
+function mobileEvidenceMaskBoundsForAction(action) {
+  const configured = getConfiguredMobileEvidenceMaskBounds();
+  const metadata = action?.metadata || {};
+  const automatic = metadata.sensitive === true && action?.locatorFingerprint?.boundingBox
+    ? [action.locatorFingerprint.boundingBox]
+    : [];
+  const unique = new Map();
+  for (const bounds of normalizeMobileEvidenceMaskBounds([...configured, ...automatic])) {
+    unique.set(`${bounds.x}:${bounds.y}:${bounds.width}:${bounds.height}`, bounds);
+  }
+  return [...unique.values()];
+}
+
+function maskMobileScreenshotBase64(base64, bounds) {
+  if (!base64 || !bounds.length) return Promise.resolve(base64);
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error('Canvas is unavailable');
+        context.drawImage(image, 0, 0);
+        context.fillStyle = '#111827';
+        for (const item of bounds) {
+          const x = Math.max(0, Math.min(canvas.width, item.x));
+          const y = Math.max(0, Math.min(canvas.height, item.y));
+          const width = Math.max(0, Math.min(canvas.width - x, item.width));
+          const height = Math.max(0, Math.min(canvas.height - y, item.height));
+          if (width && height) context.fillRect(x, y, width, height);
+        }
+        resolve(canvas.toDataURL('image/png').split(',')[1]);
+      } catch (error) { reject(error); }
+    };
+    image.onerror = () => reject(new Error('Android screenshot could not be decoded for masking'));
+    image.src = `data:image/png;base64,${base64}`;
+  });
+}
+
+async function applyMobileEvidenceMasks(execution) {
+  for (const step of execution?.steps || []) {
+    const base64 = step.evidence?.screenshotBase64;
+    const bounds = mobileEvidenceMaskBoundsForAction(step.action);
+    if (!base64 || !bounds.length) continue;
+    try {
+      step.evidence.screenshotBase64 = await maskMobileScreenshotBase64(base64, bounds);
+      step.evidence.maskedRegions = bounds.length;
+    } catch (error) {
+      delete step.evidence.screenshotBase64;
+      step.evidence.screenshotError = `Screenshot discarded because privacy masking failed: ${error.message}`;
+    }
+  }
+}
 
 function actionSignature(actions) { return JSON.stringify(normalizeRecordedActions(actions)); }
 
 function persistWorkspaceDrafts() {
+  if (isPrivacyModeEnabled()) {
+    localStorage.removeItem('omniflow-workspace-drafts');
+    return;
+  }
   if (activeAutomationWorkspace && recorder?.getActions) {
     workspaceSessionStores[activeAutomationWorkspace] = {
       actions: normalizeRecordedActions(recorder.getActions()), target: { ...currentRecordingTarget },
@@ -118,7 +221,9 @@ async function switchAutomationWorkspace(nextWorkspace, options = {}) {
 
 function initializeWorkspaceLauncher() {
   try {
-    const recovered = JSON.parse(localStorage.getItem('omniflow-workspace-drafts') || 'null');
+    const recovered = isPrivacyModeEnabled()
+      ? null
+      : JSON.parse(localStorage.getItem('omniflow-workspace-drafts') || 'null');
     for (const workspace of ['web', 'mobile']) {
       if (Array.isArray(recovered?.[workspace]?.actions)) workspaceSessionStores[workspace] = {
         actions: normalizeRecordedActions(recovered[workspace].actions), target: recovered[workspace].target || workspaceSessionStores[workspace].target,
@@ -3801,7 +3906,7 @@ async function replayActions(speed = 1.0, engine = 'webview', policy = { timeout
 
         try {
           const replayOutcome = await runReplayActionWithTimeout(action, policy.timeoutMs, replaySignal);
-          const screenshot = await captureWebviewScreenshotBase64();
+          const screenshot = isPrivacyModeEnabled() ? null : await captureWebviewScreenshotBase64();
           stepResult = {
             index: i,
             action,
@@ -3822,14 +3927,18 @@ async function replayActions(speed = 1.0, engine = 'webview', policy = { timeout
           }
 
           console.error(`Action ${i} failed:`, error);
-          const screenshot = await captureWebviewScreenshotBase64();
+          const screenshot = isPrivacyModeEnabled() ? null : await captureWebviewScreenshotBase64();
           stepResult = {
             index: i,
             action,
             error: error.message,
             duration: Date.now() - stepStartedAt,
             screenshot,
-            screenshotError: screenshot ? null : 'Webview screenshot capture returned no image',
+            screenshotError: screenshot
+              ? null
+              : isPrivacyModeEnabled()
+                ? 'Evidence capture disabled by privacy mode'
+                : 'Webview screenshot capture returned no image',
           };
           replayReport.failed.push(stepResult);
         }
@@ -3915,10 +4024,10 @@ async function replayActionsWithExecutor(actions, policy) {
       retryDelayMs: 250,
     },
     evidence: {
-      screenshotOnFailure: true,
-      captureConsoleLogs: true,
-      captureNetworkSummary: true,
-      captureDomSnapshotOnFailure: true,
+      screenshotOnFailure: !isPrivacyModeEnabled(),
+      captureConsoleLogs: !isPrivacyModeEnabled(),
+      captureNetworkSummary: !isPrivacyModeEnabled(),
+      captureDomSnapshotOnFailure: !isPrivacyModeEnabled(),
     },
   });
   report.sourceRecordingFilename = currentRecordingFilename;
@@ -3983,6 +4092,12 @@ async function replayActionsWithAndroid(actions, policy) {
       defaultStepTimeoutMs: policy.timeoutMs,
       globalTimeoutMs: Math.max(30_000, actions.length * (policy.timeoutMs + 1000)),
       resetAppState: policy.resetAppState === true,
+      evidence: {
+        screenshotOnFailure: !isPrivacyModeEnabled(),
+        captureConsoleLogs: !isPrivacyModeEnabled(),
+        captureNetworkSummary: false,
+        captureDomSnapshotOnFailure: !isPrivacyModeEnabled(),
+      },
     },
   });
   if (!result?.success) throw new Error(result?.error || 'Android replay failed');
@@ -3990,6 +4105,7 @@ async function replayActionsWithAndroid(actions, policy) {
   if (!execution || !execution.summary) throw new Error('Android replay returned no execution result');
   if (execution.runError) throw new Error(`Android replay stopped before completion: ${execution.runError}`);
   if (actions.length > 0 && execution.steps.length === 0) throw new Error('Android replay did not execute any steps');
+  await applyMobileEvidenceMasks(execution);
   replayReport = {
     total: execution.summary.total,
     passed: execution.steps.filter((step) => step.status === 'passed').map((step) => ({ index: step.index, action: step.action, error: null, duration: step.durationMs, screenshot: step.evidence?.screenshotBase64 || null, healing: step.healing || null })),
@@ -4007,6 +4123,7 @@ async function captureInteractivePageState() {
   try {
     const url = browserWebview?.getURL?.() || '';
     if (!/^https?:\/\//i.test(url)) return {};
+    if (isPrivacyModeEnabled()) return { url };
     const state = await browserWebview.executeJavaScript(`({
       cookies: document.cookie,
       localStorage: Object.fromEntries(Object.entries(localStorage)),
@@ -4062,6 +4179,7 @@ function buildWebviewExecutionReport() {
 
 async function persistRunHistory() {
   try {
+    if (isPrivacyModeEnabled()) return;
     const serialized = reporter?.exportHistory?.();
     if (serialized) await ipcRenderer.invoke('save-run-history', serialized);
   } catch (error) {
@@ -4071,6 +4189,10 @@ async function persistRunHistory() {
 
 async function hydrateRunHistory() {
   if (runHistoryHydrated) return;
+  if (isPrivacyModeEnabled()) {
+    runHistoryHydrated = true;
+    return;
+  }
   try {
     const result = await ipcRenderer.invoke('load-run-history');
     if (result?.success && result.history && result.history !== '[]') reporter?.importHistory?.(result.history);
@@ -5337,14 +5459,60 @@ function bindVisualPreferenceControls() {
   const density = document.getElementById('ui-density-select');
   const reduceMotion = document.getElementById('ui-reduce-motion');
   const lowPerformance = document.getElementById('ui-low-performance');
+  const privacyMode = document.getElementById('ui-privacy-mode');
+  const mobileEvidenceMasks = document.getElementById('mobile-evidence-mask-bounds');
   if (theme) theme.value = currentTheme;
   if (density) density.value = localStorage.getItem('chromation-density') || 'comfortable';
   if (reduceMotion) reduceMotion.checked = localStorage.getItem('chromation-reduce-motion') === 'true';
   if (lowPerformance) lowPerformance.checked = localStorage.getItem('chromation-low-performance') === 'true';
+  if (privacyMode) privacyMode.checked = isPrivacyModeEnabled();
+  if (mobileEvidenceMasks) mobileEvidenceMasks.value = JSON.stringify(getConfiguredMobileEvidenceMaskBounds(), null, 2);
   theme?.addEventListener('change', () => applyTheme(theme.value));
   density?.addEventListener('change', () => { localStorage.setItem('chromation-density', density.value); applyVisualPreferences(); });
   reduceMotion?.addEventListener('change', () => { localStorage.setItem('chromation-reduce-motion', String(reduceMotion.checked)); applyVisualPreferences(); });
   lowPerformance?.addEventListener('change', () => { localStorage.setItem('chromation-low-performance', String(lowPerformance.checked)); applyVisualPreferences(); });
+  privacyMode?.addEventListener('change', async () => {
+    const enabled = privacyMode.checked;
+    if (enabled) {
+      const confirmed = await requestConfirmation(
+        'Existing browsing history, run history, stored evidence, and recoverable workspace drafts will be permanently removed. Explicitly saved recordings and encrypted environment variables are retained.',
+        'Enable privacy mode?',
+        'Clear data & enable'
+      );
+      if (!confirmed) { privacyMode.checked = false; return; }
+    }
+    privacyMode.disabled = true;
+    try {
+      const result = await ipcRenderer.invoke('set-privacy-mode', { enabled, clearExisting: enabled });
+      if (!result?.success) throw new Error(result?.error || 'Privacy mode update failed');
+      localStorage.setItem(PRIVACY_MODE_KEY, String(enabled));
+      if (enabled) {
+        localStorage.removeItem('omniflow-workspace-drafts');
+        reporter?.clearHistory?.();
+        runHistoryHydrated = true;
+      } else {
+        runHistoryHydrated = false;
+      }
+      applyPrivacyModePresentation();
+      showToast(enabled ? 'Privacy mode enabled; retained evidence was cleared' : 'Privacy mode disabled', 'success');
+    } catch (error) {
+      privacyMode.checked = !enabled;
+      showToast(error.message, 'error');
+    } finally {
+      privacyMode.disabled = false;
+    }
+  });
+  mobileEvidenceMasks?.addEventListener('change', () => {
+    try {
+      const normalized = normalizeMobileEvidenceMaskBounds(JSON.parse(mobileEvidenceMasks.value || '[]'));
+      localStorage.setItem(MOBILE_EVIDENCE_MASKS_KEY, JSON.stringify(normalized));
+      mobileEvidenceMasks.value = JSON.stringify(normalized, null, 2);
+      showToast(`${normalized.length} mobile evidence mask${normalized.length === 1 ? '' : 's'} saved`, 'success');
+    } catch (error) {
+      mobileEvidenceMasks.value = JSON.stringify(getConfiguredMobileEvidenceMaskBounds(), null, 2);
+      showToast(error.message, 'error');
+    }
+  });
 }
 
 const onboardingSteps = [
@@ -5833,9 +6001,9 @@ async function showDiagnostics() {
     const diagnostics = await ipcRenderer.invoke('get-app-diagnostics');
     const healthyStores = diagnostics.stores.filter((store) => store.healthy).length;
     panelContent.innerHTML = `<div class="tool-panel diagnostics-panel">
-      <div class="diagnostic-health ${healthyStores === diagnostics.stores.length ? 'healthy' : 'warning'}"><strong>${healthyStores === diagnostics.stores.length ? 'System healthy' : 'Attention required'}</strong><span>${healthyStores}/${diagnostics.stores.length} storage checks passed · Encryption ${diagnostics.safeStorageAvailable ? 'available' : 'unavailable'}</span></div>
+      <div class="diagnostic-health ${healthyStores === diagnostics.stores.length ? 'healthy' : 'warning'}"><strong>${healthyStores === diagnostics.stores.length ? 'System healthy' : 'Attention required'}</strong><span>${healthyStores}/${diagnostics.stores.length} storage checks passed · Encryption ${diagnostics.safeStorageAvailable ? 'available' : 'unavailable'} · Privacy mode ${diagnostics.privacyModeEnabled ? 'on' : 'off'}</span></div>
       <div class="panel-card"><div class="card-header"><h5>Runtime versions</h5></div><div class="diagnostic-table">${Object.entries(diagnostics.versions).map(([name, value]) => `<div><span>${escapeReportText(name)}</span><code>${escapeReportText(value)}</code></div>`).join('')}<div><span>platform</span><code>${escapeReportText(diagnostics.platform.os)} · ${escapeReportText(diagnostics.platform.architecture)}</code></div></div></div>
-      <div class="panel-card"><div class="card-header"><h5>Storage</h5></div><div class="diagnostic-table">${diagnostics.stores.map((store) => `<div><span>${escapeReportText(store.name)}<small>${formatDiagnosticBytes(store.bytes)}</small></span><code title="${escapeReportText(store.path)}">${escapeReportText(store.path)}</code><b class="${store.healthy ? 'passed' : 'failed'}">${store.healthy ? 'OK' : 'Error'}</b></div>`).join('')}</div></div>
+      <div class="panel-card"><div class="card-header"><h5>Storage</h5></div><div class="diagnostic-table">${diagnostics.stores.map((store) => `<div><span>${escapeReportText(store.name)}<small>${formatDiagnosticBytes(store.bytes)}</small></span><code title="${escapeReportText(store.path)}">${escapeReportText(store.path)}</code><b class="${store.healthy ? 'passed' : 'failed'}">${store.healthy ? store.recovered ? 'Recovered' : 'OK' : 'Error'}</b></div>`).join('')}</div></div>
       <div class="panel-card"><div class="card-header"><h5>Origin permissions</h5><span class="badge">${diagnostics.permissions.length}</span></div><div class="card-content">${diagnostics.permissions.length ? diagnostics.permissions.map((item) => `<div class="permission-row"><code>${escapeReportText(item.origin)}</code><span>${escapeReportText(typeof item.permission === 'string' ? item.permission : JSON.stringify(item.permission))}</span></div>`).join('') : '<p class="hint">No origin-specific permissions stored.</p>'}</div></div>
       <button class="secondary-btn full-width" id="refresh-diagnostics">Run checks again</button>
     </div>`;
@@ -6635,6 +6803,7 @@ function showNotification(title, message) {
 
 function recordBrowsingVisit() {
   try {
+    if (isPrivacyModeEnabled()) return;
     const url = browserWebview?.getURL?.();
     if (!/^https?:\/\//i.test(url || '')) return;
     const title = browserWebview?.getTitle?.() || tabs.find((tab) => tab.id === activeTabId)?.title || url;
@@ -6685,6 +6854,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('web-toolbar-inspect')?.addEventListener('click', () => toggleTool('inspector'));
   document.getElementById('web-toolbar-record')?.addEventListener('click', () => toggleTool('recorder'));
   applyVisualPreferences();
+  await initializePrivacyMode();
   await initChromation();
   bindOnboarding();
   initializeWorkspaceLauncher();

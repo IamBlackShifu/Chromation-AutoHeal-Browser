@@ -1,6 +1,6 @@
 # OmniFlow QA Mission Delivery Program
 
-Last reviewed: 10 September 2026
+Last reviewed: 18 September 2026
 
 This program maps the premium QA automation mission to evidence in the current
 repository. Status meanings:
@@ -18,7 +18,7 @@ repository. Status meanings:
 | Premium Electron shell | Implemented | Custom chrome, themes, density, responsive rail/drawers, KPI/recording workspace, focus/motion modes | Packaged accessibility audit |
 | Modular renderer | Partial | Renderer module runtime, connected-device picker module, target-environment component, separate report workspace, and TypeScript services | Continue splitting the monolithic renderer/styles into typed feature modules/components |
 | Unified driver layer | Implemented for Web/Android | Shared contracts, web adapter, Android Appium driver | Add iOS driver and shared cross-driver contracts in CI |
-| Electron security baseline | Implemented baseline | Context isolation, no Node integration, CSP, preload/IPC allowlists, safeStorage vault | Threat model, packaged penetration review, origin/storage policy gates |
+| Electron security baseline | Implemented baseline | Context isolation, no Node integration, CSP, preload/IPC allowlists, safeStorage vault, durable origin policy, atomic core persistence, backup recovery, corruption quarantine, and privacy mode | Threat model, packaged penetration review, broader origin/storage policy gates |
 | Web inspector/discovery | Implemented | Ranked locators, fingerprints, discovery/POM foundations | Cross-origin/closed-root diagnostics and full multi-language POM parity |
 | Mobile inspector | Implemented for Android | XML tree, bounds, highlighting, ranked native locators, screenshot authoring | iOS hierarchy and embedded low-latency decoded stream |
 | Timeline authoring | Implemented broadly | Edit/reorder/duplicate/disable, assertions, waits, retries, breakpoints, variables/flows | Typed custom code-snippet sandbox and packaged workflow E2E |
@@ -26,10 +26,10 @@ repository. Status meanings:
 | Android Device Studio | Implemented and single-device certified | Discovery, Appium ownership, scrcpy control, streaming fallbacks, Record on Device gesture/text translation, hover/live-feed authoring, actions, Doctor; five-screen physical replay passed on Android 14 | Two-device physical run and embedded H.264 canvas path |
 | iOS Device Studio | Missing | Target contracts only | macOS worker, XCUITest, WebDriverAgent/signing, simulator and real device |
 | Suites/matrices/CLI | Implemented foundation | Tags, suites, browser matrices, concurrency, CLI | Mobile/cloud matrix UI integration and CI examples |
-| Reports/diagnostics | Implemented foundation | HTML/JSON/JUnit/HAR/Allure/PDF paths, evidence, logs, trends | Shareable artifact packaging and broader redaction acceptance suite |
-| PII redaction | Partial | Text/URL/DOM secret redaction and selector-based screenshot masks | Automatic sensitive-region discovery for web/mobile screenshots and logs |
-| Automated unit/integration gate | Implemented | `npm run check`, 41 suites/221 tests | Maintain as blocking CI |
-| Electron workflow E2E | Partial | Development and locally packaged Windows runs pass browse -> inspect/author locators -> record -> edit -> save -> restart -> reopen -> replay -> heal -> report/export, plus unrecoverable-selector evidence, UI remediation, passing recovery, blocked popup/download handling, unexpected-navigation return, renderer-crash recovery, and permission denial | Obtain a clean hosted Windows result, then broaden origin, storage, and real-world browser-boundary variants |
+| Reports/diagnostics | Implemented foundation | HTML/JSON/JUnit/HAR/Allure/PDF paths, evidence, logs, trends, validation-aware storage health and recovery state | Shareable artifact packaging and packaged redaction acceptance suite |
+| PII redaction | Partial | Structured web/Android secret redaction, automatic sensitive web masks, configurable and sensitive-field mobile bounds, privacy-mode evidence suppression | OCR/visual discovery for arbitrary raster content, physical mask certification, and packaged acceptance |
+| Automated unit/integration gate | Implemented | `npm run check`, 45 suites/242 tests | Maintain as blocking CI |
+| Electron workflow E2E | Partial | Development and locally packaged Windows canonical workflows pass; development U3 smoke also proves corruption recovery and privacy purge/suppression | Obtain a clean hosted Windows result for the expanded U3 script, then broaden real-world browser-boundary variants |
 | Signed distribution | Partial/external | Reproducible unsigned Windows NSIS setup, end-user dependency guide, checksum, and beta.2 GitHub prerelease | Signing credentials, macOS/Linux artifacts, notarization, updates, and rollback certification |
 
 ## Delivery order
@@ -59,10 +59,12 @@ manual intervention.
 
 ### Milestone U3 — Evidence privacy and reliability (P0)
 
-1. Centralize secret classification across recordings, logs, network bodies,
-   capabilities, hierarchy, and reports.
-2. Automatically mask sensitive web elements and configurable mobile bounds.
-3. Add atomic persistence, quotas, retention, corruption recovery, and privacy mode.
+1. Maintain centralized secret classification across recordings, logs, network
+   bodies, capabilities, hierarchy, failures, and reports.
+2. Maintain automatic sensitive web masks and configurable/derived mobile bounds;
+   extend to visual discovery only with measurable false-mask benchmarks.
+3. Maintain atomic core persistence, quotas, retention, corruption recovery, and
+   privacy mode; obtain packaged recovery/privacy acceptance.
 4. Broaden navigation, popup, download, crash, permission, and storage policies
    beyond the deterministic packaged fixtures.
 

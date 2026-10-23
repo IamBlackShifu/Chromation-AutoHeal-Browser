@@ -178,6 +178,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Automatic masking of common credential, one-time-code, payment-card, and
+  privacy-marked web fields in Playwright failure screenshots, while retaining
+  application-specific mask selectors and explicit redaction opt-out behavior.
+- Atomic JSON persistence for saved recordings and run history, including
+  last-known-good backups, bounded payload validation, automatic recovery,
+  orphaned-backup restoration, and bounded corruption quarantine.
+- The same atomic persistence and recovery guarantees now cover browsing
+  history, validated mobile profiles, and encrypted environment-vault data;
+  pre-existing valid stores receive a recovery backup on first read.
+- Privacy mode with confirmed evidence/draft/history clearing and enforced
+  suppression across webview, Playwright, and Android execution paths.
+- Durable allowlisted origin permissions and validation-aware storage diagnostics.
+- Structured credential, JWT, private-key, Android hierarchy/log/capability, and
+  failure-message redaction.
+- Configurable Android evidence rectangles plus automatic sensitive-field bounds,
+  with fail-closed screenshot removal when masking cannot be completed.
+- Electron acceptance coverage for corrupt-store recovery and privacy-mode purge.
+
 ### Planned for 0.2.0
 - Chromium fork integration
 - CDP protocol connection

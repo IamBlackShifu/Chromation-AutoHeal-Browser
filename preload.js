@@ -37,6 +37,8 @@ const invokeChannels = new Set([
   'get-environment-variable',
   'list-environment-variables',
   'set-origin-permission',
+  'get-privacy-mode',
+  'set-privacy-mode',
   'mobile-connect',
   'mobile-appium-start',
   'mobile-appium-status',
@@ -87,8 +89,25 @@ const externalURLs = new Set([
 contextBridge.exposeInMainWorld('chromationAPI', {
   initialize: () => browser.initialize(),
   shutdown: () => browser.shutdown(),
-  executeRecordedActionsWithReport: (testName, options) =>
-    browser.executeRecordedActionsWithReport(testName, options),
+  executeRecordedActionsWithReport: async (testName, options) => {
+    const privacy = await ipcRenderer.invoke('get-privacy-mode');
+    const effectiveOptions = privacy?.enabled
+      ? {
+        ...options,
+        evidence: {
+          ...(options?.evidence || {}),
+          screenshotOnFailure: false,
+          captureConsoleLogs: false,
+          captureNetworkSummary: false,
+          captureDomSnapshotOnFailure: false,
+          captureNetworkBodies: false,
+          captureTrace: false,
+          captureVideo: false,
+        },
+      }
+      : options;
+    return browser.executeRecordedActionsWithReport(testName, effectiveOptions);
+  },
   cancelExecution: (reason) => browser.cancelExecution(reason),
   pauseExecution: () => browser.pauseExecution(),
   resumeExecution: () => browser.resumeExecution(),
@@ -155,6 +174,7 @@ contextBridge.exposeInMainWorld('chromationAPI', {
     getRunAnalytics: () => reporter.getRunAnalytics(),
     exportHistory: () => reporter.exportHistory(),
     importHistory: (value) => reporter.importHistory(value),
+    clearHistory: () => reporter.clearHistory(),
     recordReport: (report) => reporter.recordReport(report),
     fromExecutionResult: (testName, execution) => reporter.fromExecutionResult(testName, execution),
   },
