@@ -12,7 +12,9 @@ describe('Browsing history', () => {
       expect(preload).toContain(`'${channel}'`);
       expect(main).toContain(`ipcMain.handle('${channel}'`);
     }
-    expect(main).toContain('entries.slice(0, 5000)');
+    expect(main).toContain('entries.slice(0, MAX_BROWSING_HISTORY_ENTRIES)');
+    expect(main).toContain('writeJsonAtomicSync(\n    browsingHistoryPath');
+    expect(main).toContain('readJsonWithRecoverySync(browsingHistoryPath');
     expect(main).toContain("!/^https?:\\/\\//i.test(url)");
   });
 

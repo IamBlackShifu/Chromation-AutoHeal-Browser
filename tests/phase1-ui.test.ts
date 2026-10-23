@@ -7,16 +7,17 @@ describe('Phase 1 UI modernization', () => {
 
   test('exposes every primary function in a labeled tool rail', () => {
     expect(html).toContain('id="tool-rail"');
-    for (const label of ['Browse', 'Inspect', 'Record', 'Suites', 'Replay', 'Scrape', 'Reports', 'Settings']) {
+    for (const label of ['Browse', 'Inspect', 'Record', 'Suites', 'Replay', 'Scrape', 'Mobile', 'Reports', 'Settings']) {
       expect(html).toContain(`<span>${label}</span>`);
     }
-    expect(html.match(/class="rail-action/g)).toHaveLength(8);
+    expect(html.match(/class="rail-action/g)).toHaveLength(9);
     expect(html.match(/aria-label="/g)?.length).toBeGreaterThanOrEqual(9);
   });
 
   test('provides command search, workspace health, and live badges', () => {
     expect(html).toContain('id="command-palette"');
-    expect(renderer).toContain("event.key.toLowerCase() === 'k'");
+    expect(renderer).toContain("const key = event.key.toLowerCase()");
+    expect(renderer).toContain("commandKey && key === 'k'");
     expect(renderer).toContain('getFilteredCommands');
     for (const id of ['home-health-score', 'home-recent-recordings', 'home-recent-runs', 'rail-recording-badge', 'rail-action-count', 'rail-failure-count', 'rail-healing-count']) {
       expect(html).toContain(`id="${id}"`);
@@ -29,6 +30,11 @@ describe('Phase 1 UI modernization', () => {
     }
     expect(renderer).toContain('function showSuitesWorkspace()');
     expect(renderer).toContain("label: 'Open Suites'");
+  });
+
+  test('does not repeat workflow navigation in a second quick-start block', () => {
+    expect(html).not.toContain('<h2>Quick start</h2>');
+    expect(html).not.toContain('data-quick-action=');
   });
 
   test('opens on Workspace Home instead of the browser surface', () => {

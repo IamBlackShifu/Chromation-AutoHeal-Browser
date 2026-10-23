@@ -20,7 +20,7 @@
             {
               "type": "navigate",
               "selector": "page",
-              "value": "data:text/html,<title>Chromation CLI</title><main><h1>CLI Ready</h1></main>",
+              "value": "data:text/html,<title>OmniFlow QA CLI</title><main><h1>CLI Ready</h1></main>",
               "timestamp": 1
             },
             {
@@ -29,7 +29,7 @@
               "timestamp": 2,
               "metadata": {
                 "kind": "title-equals",
-                "expected": "Chromation CLI"
+                "expected": "OmniFlow QA CLI"
               }
             }
           ]

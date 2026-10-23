@@ -90,6 +90,7 @@ export interface ExecutionOptions {
   retryPolicy?: RetryPolicy;
   evidence?: EvidencePolicy;
   reuseBrowser?: boolean;
+  resetAppState?: boolean;
   initialPageState?: {
     url?: string;
     cookies?: string;

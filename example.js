@@ -1,6 +1,6 @@
 "use strict";
 /**
- * Chromation AutoHeal Browser - Example Usage
+ * OmniFlow QA - Example Usage
  *
  * This file demonstrates the main features and usage patterns
  */
@@ -11,7 +11,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const index_1 = __importDefault(require("./src/index"));
 async function demonstrateFeatures() {
     console.log('='.repeat(60));
-    console.log('Chromation AutoHeal Browser - Feature Demonstration');
+    console.log('OmniFlow QA - Feature Demonstration');
     console.log('='.repeat(60));
     console.log();
     // Initialize the browser

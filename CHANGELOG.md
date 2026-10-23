@@ -1,9 +1,39 @@
 # Changelog
 
-All notable changes to Chromation AutoHeal Browser will be documented in this file.
+All notable changes to OmniFlow QA will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.3.0-beta.2] - 2026-09-10
+
+### Added
+
+- Explicit Web and Android/Appium identities for saved and recent recordings
+- Hierarchy-based locator choices for captured Android taps and long presses
+- Android replay readiness checks and confirmation before device control
+- Assisted Windows installer with desktop and Start menu shortcuts
+- Windows installation guide with optional Android dependency download links
+
+### Improved
+
+- Packaged Electron certification now exercises Inspector authoring, explicit
+  failure evidence, UI-led remediation, and a passing recovery run
+- Browser recovery guidance now covers blocked popups and downloads, unexpected
+  navigation, renderer crashes, and denied permissions without losing recordings
+- Windows CI now builds the installer and runs the canonical journey against the
+  packaged executable while retaining installation and failure artifacts
+- Legacy mobile recording detection and schema migration
+- Restoration of saved Android application, activity, device, automation, and
+  Appium endpoint settings
+- Replay routing safeguards that prevent mobile recordings from entering web replay
+- Setup Doctor guidance for Appium 3 and UiAutomator2 installation order
+
+### Known limitations
+
+- Physical Android interaction capture remains experimental.
+- iOS automation is not implemented.
+- Windows binaries are not code-signed and may trigger a SmartScreen warning.
 
 ## [0.3.0-beta.1] - 2026-07-30
 
@@ -147,6 +177,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [ ] Performance metrics collection
 
 ## [Unreleased]
+
+### Added
+
+- Automatic masking of common credential, one-time-code, payment-card, and
+  privacy-marked web fields in Playwright failure screenshots, while retaining
+  application-specific mask selectors and explicit redaction opt-out behavior.
+- Atomic JSON persistence for saved recordings and run history, including
+  last-known-good backups, bounded payload validation, automatic recovery,
+  orphaned-backup restoration, and bounded corruption quarantine.
+- The same atomic persistence and recovery guarantees now cover browsing
+  history, validated mobile profiles, and encrypted environment-vault data;
+  pre-existing valid stores receive a recovery backup on first read.
+- Privacy mode with confirmed evidence/draft/history clearing and enforced
+  suppression across webview, Playwright, and Android execution paths.
+- Durable allowlisted origin permissions and validation-aware storage diagnostics.
+- Structured credential, JWT, private-key, Android hierarchy/log/capability, and
+  failure-message redaction.
+- Configurable Android evidence rectangles plus automatic sensitive-field bounds,
+  with fail-closed screenshot removal when masking cannot be completed.
+- Electron acceptance coverage for corrupt-store recovery and privacy-mode purge.
 
 ### Planned for 0.2.0
 - Chromium fork integration

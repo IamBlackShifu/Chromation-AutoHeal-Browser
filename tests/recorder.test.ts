@@ -182,6 +182,7 @@ describe('Recorder', () => {
   });
 
   test.each([
+    ['appium-typescript', "from 'webdriverio'"],
     ['playwright', 'playwright'],
     ['selenium-js', 'selenium-webdriver'],
     ['cypress', 'describe('],
@@ -198,8 +199,24 @@ describe('Recorder', () => {
     const script = await recorder.exportScript(format);
     expect(script).toContain(marker);
     expect(script).not.toMatch(/placeholder|TODO/i);
-    if (!format.startsWith('selenium-p') && format !== 'selenium-java') {
+    if (!format.startsWith('selenium-p') && format !== 'selenium-java' && format !== 'appium-typescript') {
       expect(() => new Function(script)).not.toThrow();
     }
+  });
+
+  test('exports locator-aware Android login steps as Appium TypeScript', async () => {
+    recorder.setActions([
+      { type: 'input', selector: 'accessibility id=Username', value: 'ada', timestamp: 1 },
+      { type: 'input', selector: 'id=org.example:id/password', value: 'secret', timestamp: 2 },
+      { type: 'tap', selector: 'accessibility id=Sign in', timestamp: 3 },
+      { type: 'assert', selector: 'id=org.example:id/welcome', metadata: { kind: 'text-contains', expected: 'Welcome' }, timestamp: 4 },
+    ]);
+    const script = await recorder.exportScript('appium-typescript');
+    expect(script).toContain("'appium:automationName': 'UiAutomator2'");
+    expect(script).toContain('accessibility id=Username');
+    expect(script).toContain('await element.setValue');
+    expect(script).toContain('await element.click');
+    expect(script).toContain('Expected');
+    expect(script).toContain('await driver.deleteSession()');
   });
 });

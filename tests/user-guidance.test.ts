@@ -42,5 +42,6 @@ describe('In-product user guidance', () => {
     expect(renderer).toContain('async function showDiagnostics()');
     expect(renderer).toContain('Runtime versions');
     expect(renderer).toContain('Origin permissions');
+    expect(renderer).toContain("store.recovered ? 'Recovered' : 'OK'");
   });
 });
